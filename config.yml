@@ -1,0 +1,47 @@
+global:
+  project_name: "New-Data-Generation"
+  project_abbreviation: "NDG"
+  version: "v1"
+  volume_dir : "/media/bioinformatics/imidomics_platform/volume/"
+  output_dir: "output/"
+
+data:
+  genetic: "/media/bioinformatics/Data/Molecular/Genotype/2026_IMX_NDG_Illumina/QC/ImputedData/QC_PostImputation/ByIMID"
+  single_cell_CD: "/media/bioinformatics/Projects/Internal_Projects/2026_IMX_NDG/SingleCell/SeuratObjects/CD.CTRL.pseudobulk.RDS"
+  single_cell_UC: "/media/bioinformatics/Projects/Internal_Projects/2026_IMX_NDG/SingleCell/SeuratObjects/UC.CTRL.pseudobulk.RDS"
+  single_cell_SLE: "/media/bioinformatics/Projects/Internal_Projects/2026_IMX_NDG/SingleCell/SeuratObjects/LS.CTRL.pseudobulk.RDS"
+  proteomics: "/media/bioinformatics/Data/Molecular/Proteomics/Plasma/2024_IMX_NDG_OlinkExploreHT_IAIB/01_Raw/NPX.rds"
+  transcriptomics: ""
+  clinical: ""
+  
+metadata:
+  genetic_CD: "/media/bioinformatics/Data/Molecular/Genotype/2026_IMX_NDG_Illumina/QC/ImputedData/QC_PostImputation/ByIMID/CD/HighQC_hg38.fam"
+  genetic_UC: "/media/bioinformatics/Data/Molecular/Genotype/2026_IMX_NDG_Illumina/QC/ImputedData/QC_PostImputation/ByIMID/UC/HighQC_hg38.fam"
+  genetic_SLE: "/media/bioinformatics/Data/Molecular/Genotype/2026_IMX_NDG_Illumina/QC/ImputedData/QC_PostImputation/ByIMID/LS/HighQC_hg38.fam"
+  single_cell: "/media/bioinformatics/Projects/Internal_Projects/2026_IMX_NDG/SingleCell/Info_samples_NDG24.csv"
+  single_cell_2: "/media/bioinformatics/Projects/Internal_Projects/2026_IMX_NDG/SingleCell/SeuratObjects/NDG_metadata_donor_group_sample_sexage.RDS"
+  proteomics: "/media/bioinformatics/Data/Molecular/Proteomics/Plasma/2024_IMX_NDG_OlinkExploreHT_IAIB/Metadata/SampleTable_afterQC.rds"
+  transcriptomics: ""
+
+projects_clinical:
+  cross_sectional: "/media/bioinformatics/imidomics_platform/volume/metadata/clinical_data/clinicalData_cross-sectional_project.rds"
+  longitudinal: "/media/bioinformatics/imidomics_platform/volume/metadata/clinical_data/clinicalData_longitudinal_project.rds"
+  lucky: "/media/bioinformatics/imidomics_platform/volume/metadata/clinical_data/clinicalData_lucky_project.rds"
+  ssad: "/media/bioinformatics/imidomics_platform/volume/metadata/clinical_data/clinicalData_ssad_project.rds"
+
+projects_unified_metadata:
+  cross_sectional: "/media/bioinformatics/imidomics_platform/volume/metadata/metadata_cross-sectional_project.tsv"
+  longitudinal: "/media/bioinformatics/imidomics_platform/volume/metadata/metadata_longitudinal_project.tsv"
+  lucky: "/media/bioinformatics/imidomics_platform/volume/metadata/metadata_lucky_project.tsv"
+  ssad: "/media/bioinformatics/imidomics_platform/volume/metadata/metadata_ssad_project.tsv"
+
+database:
+  host: "10.7.50.21"
+  port: 5432  
+  name: "platform_db"
+  user: "platform_admin"
+
+database_api:
+  host: "10.7.50.21"
+  port: 8001
+  R_dir: "/media/bioinformatics/imidomics_platform/db_service/tests/R"
