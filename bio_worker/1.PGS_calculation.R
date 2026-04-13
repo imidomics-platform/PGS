@@ -268,3 +268,10 @@ dev.off()
 #system(paste0("tar -czvf ",tmp.gwas.ref.folder,"/PGS_",disease_of_interest,"_Profiles.tar.gz ",tmp.gwas.ref.folder,"/PGSprofiles"))
 #system(paste0("rm -r ",tmp.gwas.ref.folder,"/PGSprofiles/"))
 
+# =======================================
+# Input Files for Downstream Analyses
+# =======================================
+
+# tmp/prject_disease_ref_ref.anno/PGSprofiles/ThresholdingSummary.rds
+# tmp/prject_disease_ref_ref.anno/PGSprofiles/Optimal.jpeg
+# tmp/prject_disease_ref_ref.anno/PGSprofiles/PGS_*.profile optimal indicated in ThresholdingSummary.rds
