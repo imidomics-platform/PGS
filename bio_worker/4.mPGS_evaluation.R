@@ -148,8 +148,8 @@ params<-list("npoints"=100,"by"=7)
 # =========================================
 
 ensembl.tss<-readRDS(paste0(volume_dir, "/reference/gene_reference_data/All_ENS_SYMB_TSS_v37.rds"))
-newpos<-readRDS(paste0(volume_dir, "/reference/therapeutic_data_repository/gset_knownDrugs.rds")); newpos$IMID<-unique(unlist(newpos))
-newneg<-readRDS(paste0(volume_dir, "/reference/therapeutic_data_repository/curated_KDT_v1.rds")); newneg$IMID<-unique(unlist(newneg))
+newpos<-readRDS(paste0(volume_dir, "/reference/therapeutic_data_repository/KDT_v2.rds")); newpos$IMID<-unique(unlist(newpos))
+#newneg<-readRDS(paste0(volume_dir, "/reference/therapeutic_data_repository/KDT_Interactors_v2.rds")); newneg$IMID<-unique(unlist(newneg))
 nei<-readRDS(paste0(volume_dir, "/reference/gene_reference_data/Omnipath_Omnipath_Interactors_filteredAug22.rds"))
 newnei <- lapply(names(newpos), function(x) {unique(unlist(nei[newpos[[x]]]))});  names(newnei)<-names(newpos)
 
@@ -157,7 +157,7 @@ newnei <- lapply(names(newpos), function(x) {unique(unlist(nei[newpos[[x]]]))});
 # Accessing results for scoring calculation
 # =========================================
 
-disease_of_interest <- "SS"
+disease_of_interest <- "AD"
 tissue <- "blood"
 
 assay1 <- "genetics"
@@ -166,14 +166,14 @@ project1 <- "ssad_expanded"
 assay2 <- "transcriptomics"
 project2 <- "ssad"
 
-analysis <- "a2"
+analysis <- "a1"
 
 # ==================================
 # mPGS Scoring 
 # ==================================
 
 tmp.folder<-paste0(paste0("/media/bioinformatics/imidomics_platform/volume_migration/tmp/analyses/",analysis))
-scores.df<-readRDS(paste0(tmp.folder,"/PGS_",disease_of_interest,"_",assay2,"_",tissue,"_Scores.rds"))[,c("gene_symbol","Score")]
+scores.df<-readRDS(paste0(tmp.folder,"/",disease_of_interest,"_PGS_",assay2,"_",tissue,"_Scores.rds"))[,c("gene_symbol","Score")]
 colnames(scores.df)<-c("Symbol","Score")
 
 tab.dis<-evaluate_hypergeometric(scores.df = scores.df, eval_geneset = unique(c(newpos[[disease_of_interest]], newnei[[disease_of_interest]])), percentile=F, fillZeros=T, npoints = params$npoints, by = params$by)
