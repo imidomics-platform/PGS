@@ -12,38 +12,68 @@ library(ggpubr)
 library(caret)
 library(pROC)
 library(fmsb)
+library(microbenchmark)
+library(peakRAM)
 
-#---------- Base URL configuration ---------------#
-#api_host <- Sys.getenv("DB_API_HOST", "localhost")
-api_host <- Sys.getenv("DB_API_HOST", "10.7.50.21")
-api_port <- Sys.getenv("DB_API_PORT", "8001")
-BASE_URL <- Sys.getenv("DB_API_URL", paste0("http://", api_host, ":", api_port))
+########  Configuration  ########
 
-#---------------- Authentication -----------------#
-# For testing purposes, we use a fixed admin user ID in helpers.R (admin_user_id) to set the X-User-Id header for all API calls. 
-# This allows us to bypass authentication and role checks during testing.
-# In a real scenario, you would implement proper authentication and token management.
-# admin_user_id <- Sys.getenv("DB_API_ADMIN_USER_ID", "900c9b55-b976-4954-ad60-434d4239d538") # AK
-admin_user_id <- Sys.getenv("DB_API_ADMIN_USER_ID", "2122b2ed-86f7-4478-a442-c5b258b5b5fe") # AA
+#### Load configuration ####
+suppressWarnings(local_config <- yaml::read_yaml("config.yml"))
 
-#----------------- Load helper and endpoint functions -----------------#
+# directories
+volume_dir <- local_config$global$volume_dir
+tmp_dir <- local_config$global$tmp_dir
+output_dir <- paste0(tmp_dir,"TargetID/")
+if(!dir.exists(output_dir)){dir.create(output_dir)}
+
+# database API
+api_host <- local_config$database_api$host
+api_port <- local_config$database_api$port
+BASE_URL <- paste0("http://", api_host, ":", api_port)
+
+#### Load helper and endpoint functions ####
+
 # Load helper functions and endpoint functions
-db_functions_dir <- "../imidomics_platform/db_service/tests/R/" # replace with actual R path if different
-source(file.path(db_functions_dir, "helpers.R"))
-source(file.path(db_functions_dir, "datasets.R"))
-source(file.path(db_functions_dir, "users.R"))
-source(file.path(db_functions_dir, "projects.R"))
-source(file.path(db_functions_dir, "users_projects.R"))
-source(file.path(db_functions_dir, "reference_sources.R"))
-source(file.path(db_functions_dir, "db.R"))
+db_functions_dir <- local_config$database_wrapper$R_dir
 
-#----------------- Set up volume directory -----------------#
-# volume directory configuration for file-based reference sources
-volume_dir <- Sys.getenv("VOLUME_DIR", unset = "/media/bioinformatics/imidomics_platform/volume") # replace with actual volume path if different
+# source all .R files in the db_functions_dir
+DB_R_files <- list.files(db_functions_dir, pattern = "*.R", full.names = TRUE)
+temp <- lapply(DB_R_files, source)
 
-# ========
-# Analysis
-# ========
+#### Set User ID ####
+
+db_user_name <- "aaterido"
+
+user_ids <- db_list_users()
+admin_user_id <- user_ids$user_id[user_ids$user_name == db_user_name]
+
+source(paste0(db_functions_dir, "/helpers.R"))
+
+
+########  Analysis Workflow  ########
+
+####  eMR  ####
+
+system(paste0("cp /media/bioinformatics/Projects/Internal_Projects/2026_IMX_TargetIdentification_vMR3/01_MR_eQTL/06_Scoring/AD_BuduAggrey2023.rds ",output_dir,"eMR_AD.rds"))
+system(paste0("cp /media/bioinformatics/Projects/Internal_Projects/2026_IMX_TargetIdentification_vMR3/01_MR_eQTL/06_Scoring/SS_Sakaue2021.rds ",output_dir,"eMR_SS.rds"))
+system(paste0("cp /media/bioinformatics/Projects/Internal_Projects/2026_IMX_TargetIdentification_vMR3/01_MR_eQTL/06_Scoring/SLE_Bentham2015.rds ",output_dir,"eMR_SLE.rds"))
+system(paste0("cp /media/bioinformatics/Projects/Internal_Projects/2026_IMX_TargetIdentification_vMR3/01_MR_eQTL/06_Scoring/PS_Dand2025.rds ",output_dir,"eMR_PS.rds"))
+system(paste0("cp /media/bioinformatics/Projects/Internal_Projects/2026_IMX_TargetIdentification_vMR3/01_MR_eQTL/06_Scoring/PSA_Soomro2022.rds ",output_dir,"eMR_PSA.rds"))
+system(paste0("cp /media/bioinformatics/Projects/Internal_Projects/2026_IMX_TargetIdentification_vMR3/01_MR_eQTL/06_Scoring/RA_Ishigaki2022.rds ",output_dir,"eMR_RA.rds"))
+system(paste0("cp /media/bioinformatics/Projects/Internal_Projects/2026_IMX_TargetIdentification_vMR3/01_MR_eQTL/06_Scoring/UC_deLange2017.rds ",output_dir,"eMR_UC.rds"))
+system(paste0("cp /media/bioinformatics/Projects/Internal_Projects/2026_IMX_TargetIdentification_vMR3/01_MR_eQTL/06_Scoring/CD_deLange2017.rds ",output_dir,"eMR_CD.rds"))
+
+####  pMR  ####
+
+system(paste0("cp /media/bioinformatics/Projects/Internal_Projects/2026_IMX_TargetIdentification_vMR3/01_MR_pQTL/06_Scoring/AD_BuduAggrey2023.rds ",output_dir,"pMR_AD.rds"))
+system(paste0("cp /media/bioinformatics/Projects/Internal_Projects/2026_IMX_TargetIdentification_vMR3/01_MR_pQTL/06_Scoring/SS_Sakaue2021.rds ",output_dir,"pMR_SS.rds"))
+system(paste0("cp /media/bioinformatics/Projects/Internal_Projects/2026_IMX_TargetIdentification_vMR3/01_MR_pQTL/06_Scoring/SLE_Bentham2015.rds ",output_dir,"pMR_SLE.rds"))
+system(paste0("cp /media/bioinformatics/Projects/Internal_Projects/2026_IMX_TargetIdentification_vMR3/01_MR_pQTL/06_Scoring/PS_Dand2025.rds ",output_dir,"pMR_PS.rds"))
+system(paste0("cp /media/bioinformatics/Projects/Internal_Projects/2026_IMX_TargetIdentification_vMR3/01_MR_pQTL/06_Scoring/PSA_Soomro2022.rds ",output_dir,"pMR_PSA.rds"))
+system(paste0("cp /media/bioinformatics/Projects/Internal_Projects/2026_IMX_TargetIdentification_vMR3/01_MR_pQTL/06_Scoring/RA_Ishigaki2022.rds ",output_dir,"pMR_RA.rds"))
+system(paste0("cp /media/bioinformatics/Projects/Internal_Projects/2026_IMX_TargetIdentification_vMR3/01_MR_pQTL/06_Scoring/UC_deLange2017.rds ",output_dir,"pMR_UC.rds"))
+system(paste0("cp /media/bioinformatics/Projects/Internal_Projects/2026_IMX_TargetIdentification_vMR3/01_MR_pQTL/06_Scoring/CD_deLange2017.rds ",output_dir,"pMR_CD.rds"))
+
 
 
 

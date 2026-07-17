@@ -12,65 +12,76 @@ library(ggpubr)
 library(caret)
 library(pROC)
 library(fmsb)
+library(microbenchmark)
+library(peakRAM)
 
-#---------- Base URL configuration ---------------#
-#api_host <- Sys.getenv("DB_API_HOST", "localhost")
-api_host <- Sys.getenv("DB_API_HOST", "10.7.50.21")
-api_port <- Sys.getenv("DB_API_PORT", "8001")
-BASE_URL <- Sys.getenv("DB_API_URL", paste0("http://", api_host, ":", api_port))
+########  Configuration  ########
 
-#---------------- Authentication -----------------#
-# For testing purposes, we use a fixed admin user ID in helpers.R (admin_user_id) to set the X-User-Id header for all API calls. 
-# This allows us to bypass authentication and role checks during testing.
-# In a real scenario, you would implement proper authentication and token management.
-# admin_user_id <- Sys.getenv("DB_API_ADMIN_USER_ID", "900c9b55-b976-4954-ad60-434d4239d538") # AK
-admin_user_id <- Sys.getenv("DB_API_ADMIN_USER_ID", "2122b2ed-86f7-4478-a442-c5b258b5b5fe") # AA
+#### Load configuration ####
+suppressWarnings(local_config <- yaml::read_yaml("config.yml"))
 
-#----------------- Load helper and endpoint functions -----------------#
+# directories
+volume_dir <- local_config$global$volume_dir
+tmp_dir <- local_config$global$tmp_dir
+output_dir <- paste0(tmp_dir,"PGS/")
+if(!dir.exists(output_dir)){dir.create(output_dir)}
+
+# database API
+api_host <- local_config$database_api$host
+api_port <- local_config$database_api$port
+BASE_URL <- paste0("http://", api_host, ":", api_port)
+
+#### Load helper and endpoint functions ####
+
 # Load helper functions and endpoint functions
-db_functions_dir <- "../imidomics_platform/db_service/tests/R/" # replace with actual R path if different
-source(file.path(db_functions_dir, "helpers.R"))
-source(file.path(db_functions_dir, "datasets.R"))
-source(file.path(db_functions_dir, "users.R"))
-source(file.path(db_functions_dir, "projects.R"))
-source(file.path(db_functions_dir, "users_projects.R"))
-source(file.path(db_functions_dir, "reference_sources.R"))
-source(file.path(db_functions_dir, "db.R"))
+db_functions_dir <- local_config$database_wrapper$R_dir
 
-#----------------- Set up volume directory -----------------#
-# volume directory configuration for file-based reference sources
-volume_dir <- Sys.getenv("VOLUME_DIR", unset = "/media/bioinformatics/imidomics_platform/volume") # replace with actual volume path if different
+# source all .R files in the db_functions_dir
+DB_R_files <- list.files(db_functions_dir, pattern = "*.R", full.names = TRUE)
+temp <- lapply(DB_R_files, source)
 
-# ===========================================
-# Accessing database for PGS analysis example 
-# ===========================================
+#### Set User ID ####
 
-disease_of_interest <- "AD"
-assay <- "genetics"
-project <- "ssad_expanded"
+db_user_name <- "aaterido"
 
-# 1) Getting reference information for the specified disease and reference type
-# ==============================================================================
+user_ids <- db_list_users()
+admin_user_id <- user_ids$user_id[user_ids$user_name == db_user_name]
 
-# List reference sources if you want to see all available references in the system and you can filter them.
-refs <- list_reference_sources()
+source(paste0(db_functions_dir, "/helpers.R"))
 
-# List reference sources with filters
-GWAS_ref_summary <- list_reference_sources(list(reference_type = "reference GWAS summary statistics", disease = disease_of_interest), limit = 50)
-GWAS_PGS_pvals <- list_reference_sources(list(reference_type = "PGS variant p-values", disease = disease_of_interest), limit = 50)
-GWAS_PGS_weights <- list_reference_sources(list(reference_type = "PGS variant weights", disease = disease_of_interest), limit = 50)
-GWAS_ref_info <- list_reference_sources(list(reference_type = "reference GWAS and associated-PGS information", disease = disease_of_interest), limit = 50)
-# Get PGS thresholds reference source (not disease-specific)
-PGS_thresholds <- list_reference_sources(list(reference_name = "Significance Thresholds for PGS calculation"), limit = 50)
 
-# If there are multiple reference sources for the same disease and reference type, you can check for the is_default flag to identify the default reference source for that disease and reference type
-# or filter based on reference_name manually to keep only one reference source.
-GWAS_ref_summary_default <- list_reference_sources(list(reference_type = "reference GWAS summary statistics", disease = disease_of_interest, is_default = TRUE), limit = 50)
-GWAS_PGS_pvals_default <- list_reference_sources(list(reference_type = "PGS variant p-values", disease = disease_of_interest, is_default = TRUE), limit = 50)
-GWAS_PGS_weights_default <- list_reference_sources(list(reference_type = "PGS variant weights", disease = disease_of_interest, is_default = TRUE), limit = 50)
-GWAS_ref_info_default <- list_reference_sources(list(reference_type = "reference GWAS and associated-PGS information", disease =  disease_of_interest, is_default = TRUE), limit = 50)
 
-# Get the file paths for the reference sources (assuming the first reference source is the one we want to use if there are multiple)
+########  Analysis Workflow  ########
+
+#### Input ####
+
+disease_of_interest <- "UC"
+assay1 <- "genetics"
+tissue <- "blood"
+project1 <- "Cross-sectional"
+
+analysis_goal<-"PGS"
+analysis_scope<-""
+analysis_type<-""
+analysis_subtype<-paste0(assay1,"_",tissue)
+analysis_method<-"Thresholding Approach and K-Fold Cross-Validation"
+analysis_design<-""
+
+dataset_covariates<-"Gen.PC1, Gen.PC2, sex, age"
+
+#### Getting reference information for the specified input ####
+
+GWAS_ref_summary <- list_reference_sources(list(reference_type = "reference GWAS summary statistics", disease = disease_of_interest))
+GWAS_PGS_pvals <- list_reference_sources(list(reference_type = "PGS variant p-values", disease = disease_of_interest))
+GWAS_PGS_weights <- list_reference_sources(list(reference_type = "PGS variant weights", disease = disease_of_interest))
+GWAS_ref_info <- list_reference_sources(list(reference_type = "reference GWAS and associated-PGS information", disease = disease_of_interest))
+PGS_thresholds <- list_reference_sources(list(reference_name = "Significance Thresholds for PGS calculation"))
+
+GWAS_ref_summary_default <- list_reference_sources(list(reference_type = "reference GWAS summary statistics", disease = disease_of_interest, is_default = TRUE))
+GWAS_PGS_pvals_default <- list_reference_sources(list(reference_type = "PGS variant p-values", disease = disease_of_interest, is_default = TRUE))
+GWAS_PGS_weights_default <- list_reference_sources(list(reference_type = "PGS variant weights", disease = disease_of_interest, is_default = TRUE))
+GWAS_ref_info_default <- list_reference_sources(list(reference_type = "reference GWAS and associated-PGS information", disease =  disease_of_interest, is_default = TRUE))
+
 GWAS_ref_summary_default_path <- paste0(volume_dir, "/", GWAS_ref_summary_default$reference_path[1]) # assuming the first reference source is the one we want to use
 GWAS_PGS_pvals_default_path <- paste0(volume_dir, "/", GWAS_PGS_pvals_default$reference_path[1]) # assuming the first reference source is the one we want to use
 GWAS_PGS_weights_default_path <- paste0(volume_dir, "/", GWAS_PGS_weights_default$reference_path[1]) # assuming the first reference source is the one we want to use
@@ -82,16 +93,13 @@ GWAS_ref_id <- GWAS_ref_info$GWAS_id
 GWAS_reference_genome <- GWAS_ref_info$REF.ANNO
 GWAS_pgs.cat.id <- GWAS_ref_info$PGS.CAT.ID
 
-# 2) Getting dataset information for the specified disease, assay type and project
-# Assuming the first dataset is the one we want to use
-# ================================================================================
+#### Getting dataset information for the specified input ####
 
-dataset_info <- list_datasets(list(disease = disease_of_interest, dataset_project=project, assay = assay), limit = 50)
+dataset_info <- list_datasets(list(disease = disease_of_interest, dataset_project=project1, assay = assay1))
 dataset_path    <- paste0(volume_dir, "/", dataset_info$dataset_path[1]) 
 dataset_version <- dataset_info$dataset_version[1]
 dataset_yaml_path <- paste0(dataset_path, "/", dataset_version, ".yaml")
 
-# read dataset YAML file to get the path to the processed PGS file for the specified disease
 dataset_yaml <- yaml::read_yaml(dataset_yaml_path)
 dataset_gwas_hg19_path <- paste0(dataset_path, "/", dataset_yaml$gwas_hg19_data)
 dataset_gwas_hg38_path <- paste0(dataset_path, "/", dataset_yaml$gwas_hg38_data)
@@ -101,15 +109,14 @@ dataset_pgs_dict <- paste0(dataset_path, "/", dataset_yaml$pgs.cat_dict)
 dataset_samples<-read.delim(paste0(dataset_path, "/samples/samples.tsv"),header=T)
 dataset_pcs<-read.delim(paste0(dataset_path, "/", dataset_yaml$pc_data),header=T)
 
-print(paste0(disease_of_interest," | ",assay," | ",project," | ",dataset_info$dataset_name, " | ", GWAS_ref_id))
+print(paste0(disease_of_interest," | ",assay1," | ",project1," | ",dataset_info$dataset_name, " | ", GWAS_ref_id))
 
-# =================================================
-# PGS Calculation 
-# =================================================
+####  PGS Calculation  ####
 
-tmp.folder<-paste0("/media/bioinformatics/imidomics_platform/volume_migration/tmp/")
+tmp.gwas.ref.folder<-paste0(output_dir,disease_of_interest,"_",GWAS_ref_info$GWAS_id,"_",GWAS_reference_genome)
+dir.create(tmp.gwas.ref.folder)
 
-#---------------- Functions -----------------#
+# Functions
 
 read_and_rename <- function(file) {
   df <- read.table(file, header=T, stringsAsFactors=F)[,c(2,6)]
@@ -117,7 +124,7 @@ read_and_rename <- function(file) {
   return(df)
 }
 
-#---------------- Harmonization -------------#
+# 1. Harmonization
 
 filt.data<-readRDS(GWAS_ref_summary_default_path)
 if(GWAS_reference_genome=="hg19") {dataset_gwas<-dataset_gwas_hg19_path} else {dataset_gwas<-dataset_gwas_hg38_path}
@@ -127,10 +134,8 @@ dfm<-merge(bim.imx,filt.data[,c("SNP","REF.ALLELE","OTH.ALLELE","STDERR","EFFECT
 dfm<-dfm[(nchar(dfm$REF.ALLELE)<2 & nchar(dfm$OTH.ALLELE)<2),]
 dfm<-dfm[(toupper(dfm$REF.ALLELE)==dfm$A1 | toupper(dfm$REF.ALLELE)==dfm$A2),]
 
-#---------------- Thresholding Approach ----#
+# 2. Thresholding Approach
 
-tmp.gwas.ref.folder<-paste0(tmp.folder,project,"_",disease_of_interest,"_",GWAS_ref_info$GWAS_id,"_",GWAS_reference_genome)
-dir.create(tmp.gwas.ref.folder)
 write.table(data.frame("SNPS.REF"=nrow(filt.data), "SNPS.IMX"=nrow(bim.imx), "SNPS.COMMON.QC"=nrow(dfm), "SNPS.COMMON.QC.PERC"=100*(nrow(dfm)/nrow(bim.imx))), paste0(tmp.gwas.ref.folder,"/CommonSNPs.txt"), quote=F, row.names=F, sep="\t")
 
 ths.ld<-c(0.2,0.5,0.9)
@@ -149,11 +154,9 @@ pgs.ext<-read.delim(dataset_pgs_cat, header = TRUE)
 pgs.dict<-read.delim(dataset_pgs_dict, header = TRUE)
 pgs.data <- merge(purrr:::reduce(df.list, full_join, by="sample_id"),pgs.ext, by="sample_id")
 
-#---------------- K-Fold Cross-Validation ----#
+# 3. K-Fold Cross-Validation to get optimal combination of thresholds
 
 k<-5
-
-# Getting optimal combination of thresholds
 
 colnames(dataset_pcs)[2:21]<-paste0("Gen.",colnames(dataset_pcs)[2:21])
 data0<-merge(dataset_samples, dataset_pcs, by="sample_id")
@@ -205,7 +208,7 @@ for (j in pgs.cat.id) {
   results$Nagelkerke.R2.Epi[count]<-NagelkerkeR2(model.epi)$R2
 }
 
-# Applying optimal thresholds to full dataset
+# 4. Applying optimal thresholds to full dataset
 
 opt.ths<-results[which.max(results$Nagelkerke.R2.All),"Threshold"]
 
@@ -243,8 +246,6 @@ for (i in 1:nrow(results)) {
   }
 }
 
-# Summary optimal threshold
-
 p.opt<-ggboxplot(data, x="IMID.Num", y="Optimal", color="IMID.Num", add="jitter", fill="IMID.Num", add.params=list(size=1,jitter=0.33)) +
   scale_color_manual(values=rep("black",2)) +
   scale_fill_manual(values=c("0"="#0F7D0F", "1"="#AF0C0C")) +
@@ -265,13 +266,35 @@ jpeg(paste0(tmp.gwas.ref.folder,"/PGSprofiles/Optimal.jpeg"), res=300, height=15
 plot(p.opt)
 dev.off()
 
-#system(paste0("tar -czvf ",tmp.gwas.ref.folder,"/PGS_",disease_of_interest,"_Profiles.tar.gz ",tmp.gwas.ref.folder,"/PGSprofiles"))
-#system(paste0("rm -r ",tmp.gwas.ref.folder,"/PGSprofiles/"))
+data.optimal<-results[!is.na(results$Nagelkerke.R2.All.FullDataset),]
 
-# =======================================
-# Input Files for Downstream Analyses
-# =======================================
+####  Register the analysis: create a new analysis in the database  ####
 
-# tmp/prject_disease_ref_ref.anno/PGSprofiles/ThresholdingSummary.rds
-# tmp/prject_disease_ref_ref.anno/PGSprofiles/Optimal.jpeg
-# tmp/prject_disease_ref_ref.anno/PGSprofiles/PGS_*.profile optimal indicated in ThresholdingSummary.rds
+# Payload fields: http://10.7.50.21:8000/docs#/analyses/create_analysis_analyses__post
+
+new_analysis_payload <- list(
+  analysis_goal = analysis_goal,
+  analysis_scope = analysis_scope,
+  analysis_type = analysis_type,
+  analysis_subtype = paste0(assay1,"_",tissue),
+  analysis_method = analysis_method,
+  analysis_design = analysis_design,
+  parameters = list("Data.Molecular"=dataset_gwas,"Data.Covariates"=dataset_covariates,"Data.Optimal"=data.optimal),
+  omics_layer = assay1,
+  disease_name = disease_of_interest,
+  datasets = list(dataset_id),
+  reference_sources = as.list(c(GWAS_ref_summary_default$reference_id,GWAS_PGS_pvals_default$reference_id,GWAS_PGS_weights_default$reference_id,GWAS_ref_info_default$reference_id,PGS_thresholds$reference_id)),
+  input_files = list()
+)
+
+new_analysis <- db_create_analysis(new_analysis_payload)
+
+update_analysis_payload <- list(
+  analysis_path = paste0(tmp.gwas.ref.folder,"/PGSprofiles/"),
+  analysis_code = gsub("/home/aaterido/Escritorio/GitHub_Repositories/","/",paste0(dirname(rstudioapi::getSourceEditorContext()$path),"/",basename(rstudioapi::getSourceEditorContext()$path)))
+)
+
+db_update_analysis(new_analysis$analysis_id, update_analysis_payload)
+
+db_list_analyses()
+

@@ -50,18 +50,18 @@ admin_user_id <- user_ids$user_id[user_ids$user_name == db_user_name]
 source(paste0(db_functions_dir, "/helpers.R"))
 
 
-
 ########  Analysis Workflow  ########
 
 #### Input ####
 
-disease_of_interest <- "UC"
+disease_of_interest <- "RA"
 tissue <- "blood"
 assay1 <- "transcriptomics"
 project1 <- "Cross-sectional"
 analysis_design <- "case-control"
 analysis_goal <- "TargetID"
 analysis_subtype <- "DGEA"
+analysis_scope <- "BulkBlood"
 
 #### Getting dataset information for the specified input ####
 
@@ -96,8 +96,8 @@ filt.genes.criterion<-c("Non-expressed","PartiallyExpressed")
 filt.genes.out<-featureTable[(featureTable$ExpressedPercentageCategory %in% filt.genes.out),"feature_id"]
 RNA<-t(dataset_analysis_data[!(rownames(dataset_analysis_data) %in% filt.genes.out),])
 
-s2a<-merge(dataset_samples_mol,dataset_tech_mol,by="sample_id"); rownames(s2a)<-s2a$sample_id
-df2a<-merge(s2a[,c("disease","sex","age","plateId")],RNA,by=0)
+s2a<-merge(dataset_samples[dataset_samples$timepoint=="wk0",],dataset_samples_tech,by="sample_id"); rownames(s2a)<-s2a$sample_id
+df2a<-merge(s2a[,c("disease",dataset_analysis_covs)],RNA,by=0)
 
 df2a$IMID <- factor(ifelse(df2a$disease == disease_of_interest, "1", "0"))
 genes<-grep("^ENSG", names(df2a), value=T)
@@ -105,9 +105,14 @@ genes<-grep("^ENSG", names(df2a), value=T)
 covs.text<-paste(dataset_analysis_covs,collapse=" + ")
 
 results <- lapply(genes, function(gene) {
-  formula <- as.formula(paste0("IMID ~ ",gene," + ",covs.text))
+  formula <- as.formula(paste0("IMID ~ ","`", gene, "` + ",covs.text))
   model <- glm(formula, data=df2a, family="binomial")
-  out <- c(disease_of_interest,gene,coefficients(summary(model))[gene,"Estimate"],coefficients(summary(model))[gene,"Std. Error"],coefficients(summary(model))[gene,"Pr(>|z|)"])
+  coef.model<-rownames(coefficients(summary(model)))
+  if (gene %in% coef.model) {
+    out <- c(disease_of_interest,gene,coefficients(summary(model))[gene,"Estimate"],coefficients(summary(model))[gene,"Std. Error"],coefficients(summary(model))[gene,"Pr(>|z|)"])
+  } else {
+    out <- c(disease_of_interest,gene,NA,NA,NA)
+  }
 })
 
 res<-as.data.frame(do.call(rbind, results))[,c(2,3,5)]
@@ -118,9 +123,9 @@ res<-merge(res,corresp[,c("EnsemblID","gene_symbol")],by.x="Ensembl_ID",by.y="En
 res<-res[,c(1,4,5,2,3)]
 colnames(res)[3]<-"Symbol"
 res<-res[order(res$Pvalue),]
-head(res)
+res<-res[!is.na(res$Pvalue),]
 
-saveRDS(res,paste0(output_dir,"BulkBlood_",disease_of_interest,".rds"))
+saveRDS(res,paste0(output_dir,analysis_scope,"_",disease_of_interest,".rds"))
 
 ####  Estimate computational resources  ####
 
@@ -145,7 +150,7 @@ peak <- peakRAM({tmp <- lapply(sample_genes, function(gene) {formula<-as.formula
 peak_ram_mb <- peak$Peak_RAM_Used_MiB
 
 # Disk usage (save results)
-disk_usage_mb <- file.size(paste0(output_dir,"BulkBlood_",disease_of_interest,".rds")) / (1024^2)
+disk_usage_mb <- file.size(paste0(output_dir,analysis_scope,"_",disease_of_interest,".rds")) / (1024^2)
 
 # Derived metrics
 median_batch_time <- median(times_sec)
@@ -186,7 +191,7 @@ new_analysis_payload <- list(
 new_analysis <- db_create_analysis(new_analysis_payload)
 
 update_analysis_payload <- list(
-  analysis_path = paste0(output_dir,"BulkBlood_",disease_of_interest,".rds"),
+  analysis_path = paste0(output_dir,analysis_scope,"_",disease_of_interest,".rds"),
   analysis_code = gsub("/home/aaterido/Escritorio/GitHub_Repositories/","/",paste0(dirname(rstudioapi::getSourceEditorContext()$path),"/",basename(rstudioapi::getSourceEditorContext()$path)))
 )
 
