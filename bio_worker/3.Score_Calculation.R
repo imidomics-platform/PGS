@@ -65,7 +65,7 @@ analysis_scope <- "Scoring Individual Dimensions"
 
 ########  Analysis Workflow  ########
 
-diseases<-grep("oJIA",unique(list_datasets()$disease),invert=T, value=T)
+diseases<-grep("oJIA",unique(db_list_datasets()$disease),invert=T, value=T)
 
 gene.anno_reference_id <- db_list_reference_sources(list(reference_type = "annotation", reference_name="Gene Annotation", is_default = TRUE))$reference_id
 gene.anno_reference <- db_get_reference_source(gene.anno_reference_id)
@@ -95,15 +95,16 @@ for (d in dimensions) {
 
 ####  2.Genetic Regulation  ####
 
-dimensions<-c("tPGS") #,"pPGS")
+dimensions<-c("tPGS","pPGS")
 
 for (d in dimensions) {
   Scores<-list()
   for (imid in diseases) {
       x<-readRDS(paste0(output_dir,d,"_",imid,".rds"))
+      x<-x[!is.na(x$Pvalue),]
       x$Score<- (-log10(x$Pvalue) - min(-log10(x$Pvalue))) / (max(-log10(x$Pvalue)) - min(-log10(x$Pvalue)))
       x$Direction<-sign(x$Effect)
-      x2save<-x[,c(1,8,9)]; rownames(x2save)<-NULL; colnames(x2save)<-c("EnsemblID","Score","Direction")
+      x2save<-x[,c(1,2,6,7)]; rownames(x2save)<-NULL; colnames(x2save)<-c("EnsemblID","TechID","Score","Direction")
       Scores[[imid]]<-x2save
   }
   saveRDS(Scores,paste0(output_dir,"Scores_",d,".rds"))
@@ -126,9 +127,25 @@ for (d in dimensions) {
   saveRDS(Scores,paste0(output_dir,"Scores_",d,".rds"))
 }
 
-
-
 ####  4.Proteomics  ####
+
+dimensions<-c("PlasmaProteomics")
+
+for (d in dimensions) {
+  Scores<-list()
+  for (imid in diseases) {
+    x<-readRDS(paste0(output_dir,d,"_",imid,".rds"))
+    x<-x[!is.na(x$Pvalue),]
+    x$Score<- (-log10(x$Pvalue) - min(-log10(x$Pvalue))) / (max(-log10(x$Pvalue)) - min(-log10(x$Pvalue)))
+    x$Direction<-sign(x$Effect)
+    x2save<-x[,c(1,2,6,7)]; rownames(x2save)<-NULL; colnames(x2save)<-c("EnsemblID","TechID","Score","Direction")
+    Scores[[imid]]<-x2save
+  }
+  saveRDS(Scores,paste0(output_dir,"Scores_",d,".rds"))
+}
+
+
+
 
 ####  Register the analysis: create a new analysis in the database  ####
 
