@@ -56,7 +56,36 @@ source(paste0(db_functions_dir, "/helpers.R"))
 
 #### Input ####
 
-disease_of_interest <- "SS"
+# Datasets to be used according to AI-powered algorithm
+
+# AD  - d106 - tissue_type, timepoint, technical_replicate - LimmaVoomDreamWeights - data/RNA.rds
+# AD  - d107 - tissue_type, timepoint                      - LimmaVoomDreamWeights - data/RNA.rds
+# AD  - d108 - tissue_type                                 - LimmaVoom             - data/RNA.rds                                  
+# SS  - d109 - sex, age                                    - LimmaVoom             - data/RNA.rds
+# SS  - d110 - sex, age, tissue_region                     - LimmaVoom             - data/RNA.rds
+# CD  - d115 - sex, age                                    - LimmaLinearModel      - preprocessed/RNA_NormNoAdj.rds
+# CD  - d117 - sex, age                                    - LimmaVoom             - data/RNA.rds
+# CD  - d118 - sex, age                                    - LimmaLinearModel      - preprocessed/RNA_NormNoAdj.rds
+# CD  - d124 -                                             - LimmaLinearModel      - preprocessed/RNA_NormNoAdj.rds
+# UC  - d116 - sex, age                                    - LimmaLinearModel      - preprocessed/RNA_NormNoAdj.rds
+# UC  - d125 -                                             - LimmaLinearModel      - preprocessed/RNA_NormNoAdj.rds
+# RA  - d119 - sex, age                                    - LimmaLinearModel      - preprocessed/RNA_NormNoAdj.rds
+# PSA - d123 -                                             - LimmaVoom             - data/RNA.rds
+# PS  - d122 -                                             - LimmaVoom             - data/RNA.rds 
+# SLE - d114 - tissue_region, technical_replicate          - LimmaVoomDreamWeights - preprocessed/RNA_NormNoAdj.rds
+
+
+
+
+
+
+
+
+
+
+
+
+disease_of_interest <- "RA"
 tissue <- "blood"
 assay1 <- "transcriptomics"
 project1 <- "SSAD"
@@ -64,8 +93,19 @@ analysis_design <- "case-control"
 analysis_goal <- "TargetID"
 analysis_type <- "DGEA"
 analysis_scope <- "BulkBlood"
-analysis_method <- "LimmaVoom"                                    # LimmaLinearModel vs LogisticRegression vs LimmaVoom
+analysis_method <- "LimmaLinearModel"                             # LimmaLinearModel vs LogisticRegression
 analysis_covs <-c("sex","age","Sequencing_batch")                 # 6 IMIDs: c("sex","age","plateId"); SSAD: c("sex", "age", "Sequencing_batch")
+
+
+
+
+
+
+
+
+
+
+
 
 analysis_subtype <- paste0(analysis_method,"_",paste(analysis_covs,collapse="+"))
 
@@ -87,7 +127,6 @@ dataset_samples<-read.delim(paste0(dataset_path, "/samples/samples.tsv"),header=
 dataset_samples_tech<-read.delim(paste0(dataset_path, "/samples/samples_technology.tsv"),header=T)
 
 dataset_analysis_data <- readRDS(paste0(dataset_path, "/", dataset_yaml$analysis_data))
-dataset_analysis_data2 <- readRDS(paste0(dataset_path, "/", dataset_yaml$raw_rna_data))
 
 print(paste0(disease_of_interest," | ",assay1," | ",project1," | ",tissue," | ",dataset_info$dataset_name))
 
@@ -105,15 +144,7 @@ featureTable<-read.csv(paste0(volume_dir,gene.featureTable_reference$reference_p
 
 filt.genes.criterion<-c("Non-expressed","PartiallyExpressed")
 filt.genes.out<-featureTable[(featureTable$ExpressedPercentageCategory %in% filt.genes.criterion),"feature_id"]
-
-if (analysis_method!="LimmaVoom") {
-  RNA<-t(dataset_analysis_data[!(rownames(dataset_analysis_data) %in% filt.genes.out),])
-  data.mol<-dataset_yaml$analysis_data
-} else {
-  RNA<-t(dataset_analysis_data2[!(rownames(dataset_analysis_data2) %in% filt.genes.out),])
-  data.mol<-dataset_yaml$raw_rna_data
-}
-
+RNA<-t(dataset_analysis_data[!(rownames(dataset_analysis_data) %in% filt.genes.out),])
 
 s2a<-merge(dataset_samples[dataset_samples$timepoint=="wk0",],dataset_samples_tech,by="sample_id"); rownames(s2a)<-s2a$sample_id
 df2a<-merge(s2a[,c("disease",analysis_covs)],RNA,by=0)
@@ -135,7 +166,7 @@ new_analysis_payload <- list(
   analysis_design = analysis_design,
   omics_layer = assay1,
   disease_name = disease_of_interest,
-  parameters = list("DataMolecular"=data.mol,
+  parameters = list("DataMolecular"=dataset_yaml$analysis_data,
                     "DataFilter"=paste(filt.genes.criterion,collapse=","),
                     "AnalysisCovariates"=paste(analysis_covs,collapse=",")),
   datasets = list(dataset_id),
@@ -182,41 +213,6 @@ if (analysis_method=="LogisticRegression") {
   res<-res[!is.na(res$Pvalue),]
 }
 if (analysis_method=="LimmaLinearModel") {
-  
-  meta <- df2a[, c("disease", analysis_covs)]
-  meta$disease <- factor(meta$disease)
-  meta$sex <- factor(meta$sex)
-  
-  if ("plateId" %in% colnames(meta)) {
-    meta$plateId <- factor(meta$plateId)
-  } else if ("Sequencing_batch" %in% colnames(meta)) {
-    meta$Sequencing_batch <- factor(meta$Sequencing_batch)
-  } else {
-    stop("No batch variable found (plateId or Sequencing_batch)")
-  }
-  
-  meta$disease <- relevel(meta$disease, ref = "CTRL")
-  
-  expr <- as.matrix(df2a[, !(colnames(df2a) %in% c("Row.names", "disease", analysis_covs))])
-  expr <- t(expr)
-  
-  design <- model.matrix(as.formula(paste0("~ disease + ",covs.text)), data = meta)
-  fit <- lmFit(expr, design)
-  fit <- eBayes(fit)
-  coef<-paste0("disease",disease_of_interest)
-  res <- topTable(fit, coef = coef, number = Inf)
-  
-  res$gene <- rownames(res)
-  res <- res[, c("gene", colnames(res)[!colnames(res) %in% "gene"])]
-  res<-merge(res,corresp[,c("EnsemblID","gene_symbol")],by.x="gene",by.y="EnsemblID", all.x=T)
-  res$TechID<-NA
-  res<-res[,c("gene","TechID","gene_symbol","logFC","P.Value")]
-  colnames(res)<-c("Ensembl_ID","TechID","Symbol","Effect","Pvalue")
-  res<-res[order(res$Pvalue),]
-  res<-res[!is.na(res$Pvalue),]
-  
-}
-if (analysis_method=="LimmaVoom") {
   
   meta <- df2a[, c("disease", analysis_covs)]
   meta$disease <- factor(meta$disease)
