@@ -1,3 +1,6 @@
+
+########  Libraries  ########
+
 library(httr)
 library(jsonlite)
 library(sodium)
@@ -23,8 +26,6 @@ suppressWarnings(local_config <- yaml::read_yaml("config.yml"))
 # directories
 volume_dir <- local_config$global$volume_dir
 tmp_dir <- local_config$global$tmp_dir
-output_dir <- paste0(tmp_dir,"TargetID/")
-if(!dir.exists(output_dir)){dir.create(output_dir)}
 
 # database API
 api_host <- local_config$database_api$host
@@ -53,7 +54,7 @@ source(paste0(db_functions_dir, "/helpers.R"))
 
 #### Input ####
 
-disease_of_interest <- "SLE"
+disease_of_interest <- "UC"
 
 assay1 <- "genetics"
 project1 <- "Cross-sectional"
@@ -64,12 +65,17 @@ tissue <- "plasma"
 
 analysis_design <- "case-only"
 analysis_goal <- "TargetID"
-analysis_scope<-"pPGS"
+analysis_type <- paste0(assay1,"_",assay2)
+analysis_scope <- "pPGS"
+analysis_method <- "LinearModel"                            
+analysis_covs <-c("sex","age","Dim.1","Dim.2","Dim.3","Dim.4","gen.pc1","gen.pc2")          # 5 IMIDs: c("sex","age","Dim.1","Dim.2","Dim.3","Dim.4","gen.pc1","gen.pc2"); SLE: c("sex","age","gen.pc1","gen.pc2","Dim.1","Dim.2","PlateId"); SSAD: c("sex", "age","gen.pc1","gen.pc2","eGFR","Dim.1")
 
-analysis_method <- paste0("LM: ",assay2," ~ ",assay1)
+analysis_subtype <- paste0(analysis_method,"_",paste(analysis_covs,collapse="+"))
 
-out.path<-paste0(output_dir,analysis_scope,"_",disease_of_interest,".rds")
-analysis.path<-gsub("/home/aaterido/Escritorio/GitHub_Repositories/","/",paste0(dirname(rstudioapi::getSourceEditorContext()$path),"/",basename(rstudioapi::getSourceEditorContext()$path)))
+output_dir <- paste0(tmp_dir,"/",analysis_goal,"/")
+if(!dir.exists(output_dir)){dir.create(output_dir)}
+analysis_path <- paste0(output_dir,analysis_scope,"_",disease_of_interest,"_",analysis_method,".rds")
+analysis_code <- gsub("/home/aaterido/Escritorio/GitHub_Repositories/","/",paste0(dirname(rstudioapi::getSourceEditorContext()$path),"/",basename(rstudioapi::getSourceEditorContext()$path)))
 
 #### Getting genetic dataset information for the specified input ####
 
@@ -98,7 +104,7 @@ dataset_genetics_samples<-read.delim(paste0(dataset_path, "/samples/samples.tsv"
 
 print(paste0(disease_of_interest," | ",assay1," | ",project1," | ",dataset_info$dataset_name))
 
-#### Getting molecular dataset information for the specified input ####
+#### Getting proteomics dataset information for the specified input ####
 
 dataset_info <- db_list_datasets(list(disease = disease_of_interest, dataset_project=project2, assay=assay2, tissue=tissue))
 dataset_id <- dataset_info$dataset_id
@@ -111,7 +117,6 @@ dataset_samples_mol<-read.delim(paste0(dataset_path, "/samples/samples.tsv"),hea
 dataset_samples_tech<-read.delim(paste0(dataset_path, "/samples/samples_technology.tsv"),header=T)
 
 dataset_analysis_data <- readRDS(paste0(dataset_path, "/", dataset_yaml$analysis_data))
-dataset_analysis_covs <- unlist(strsplit(dataset_yaml$analysis_covariates,", "))
 
 if (dataset_yaml$pcs_data!="") {
   dataset_analysis_pcs <-  read.delim(paste0(dataset_path, "/",dataset_yaml$pcs_data),header=T)
@@ -129,16 +134,14 @@ prot.anno_reference <- db_get_reference_source(prot.anno_reference_id)
 corresp<-read.csv(paste0(volume_dir,prot.anno_reference$reference_path),sep="\t")
 
 if (tech.source=="SomaScan_Assay_v4.1") {
-    corresp<-corresp[,c("AptName","Ensembl_ID","Updated_Symbol")]
+  corresp<-corresp[,c("AptName","Ensembl_ID","Updated_Symbol")]
 }
 if (tech.source=="Olink Explore HT 7.0.5") {
-    corresp<-corresp[,c("OlinkID","Ensembl_ID","MappedGene")]
+  corresp<-corresp[,c("OlinkID","Ensembl_ID","MappedGene")]
 }
 colnames(corresp)<-c("TechID","Ensembl_ID","Symbol")
 
-#### Association Analysis ####
-
-# Getting PGS Data
+#### Getting PGS Data ####
 
 df.gen0<-merge(dataset_genetics_pgs[,c("sample_id","SCORE")],dataset_genetics_pcs[,c("sample_id","PC1","PC2")], by="sample_id")
 colnames(df.gen0)<-c("sample_id","pgs","gen.pc1","gen.pc2")
@@ -149,7 +152,7 @@ df.gen<-df.gen2[,c("followup_id","pgs","gen.pc1","gen.pc2")]
 rownames(df.gen) <- df.gen[[1]]
 df.gen <- df.gen[,-1]
 
-# Getting Proteomics Data (Filtering by wk0 & tissue) & Analysis Covariates
+#### Processing Proteomics Data (Filtering by wk0 & tissue) & Analysis Covariates ####
 
 id.merge<-colnames(dataset_samples_mol)[colnames(dataset_samples_mol) %in% colnames(dataset_samples_tech)]
 
@@ -162,7 +165,7 @@ if (tissue=="skin" | tissue=="salivary_gland") {
 id.merge2<-colnames(dataset_samples_tech)[colnames(dataset_samples_tech) %in% colnames(dataset_analysis_pcs)]
 dataset_vars<-merge(dataset_samples_tech, dataset_analysis_pcs, by=id.merge2)
 
-analysis.covs2get<-colnames(dataset_vars)[colnames(dataset_vars) %in% dataset_analysis_covs]
+analysis.covs2get<-colnames(dataset_vars)[colnames(dataset_vars) %in% analysis_covs]
 
 id.merge3<-colnames(df.mol.samples)[colnames(df.mol.samples) %in% colnames(dataset_vars)]
 df.prot<-merge(df.mol.samples,dataset_vars[,c(id.merge3, analysis.covs2get)], by=id.merge3)
@@ -185,18 +188,39 @@ df.omics$age<-as.numeric(df.omics$age)
 
 dim(df.omics)
 
-covs2a<-colnames(df.omics)[colnames(df.omics) %in% c("gen.pc1","gen.pc2",dataset_analysis_covs)]
+covs2a<-colnames(df.omics)[colnames(df.omics) %in% analysis_covs]
+covs.text<-paste(analysis_covs,collapse=" + ")
 
-print(nrow(df.omics))
-print(covs2a)
-print(dataset_analysis_covs)
+mol2analyze<-grep("^ENS",colnames(df.omics),value=T)
 
-# Statistical Analysis
+#### Register the analysis: create a new analysis in the database ####
+
+# Payload fields: http://10.7.50.21:8000/docs#/analyses/create_analysis_analyses__post
+
+new_analysis_payload <- list(
+  analysis_goal = analysis_goal,
+  analysis_scope = analysis_scope,
+  analysis_type = analysis_type,
+  analysis_subtype = analysis_subtype,
+  analysis_method = analysis_method,
+  analysis_design = analysis_design,
+  omics_layer = assay1,
+  disease_name = disease_of_interest,
+  parameters = list("DataMolecular"=dataset_yaml$analysis_data,
+                    "DataOptimal"=paste0("PGS:",ths.opt),
+                    "AnalysisCovariates"=covs.text),
+  datasets = list(dataset_id),
+  reference_sources = as.list(c(prot.anno_reference_id)),
+  input_files = list()
+)
+new_analysis <- db_create_analysis(new_analysis_payload)
+
+#### Execute the analysis ####
 
 mol2analyze<-colnames(df.omics)[!(colnames(df.omics) %in% c("pgs",covs2a))]
 
 results <- lapply(mol2analyze, function(mol) {
-  formula <- as.formula(paste0("`", mol, "` ~ pgs + ",paste(covs2a,collapse=" + ")))
+  formula <- as.formula(paste0("`", mol, "` ~ pgs + ",covs.text))
   model<- lm(formula, data = df.omics)
   out <- c(mol,coefficients(summary(model))["pgs","Estimate"],coefficients(summary(model))["pgs","Std. Error"],coefficients(summary(model))["pgs","Pr(>|t|)"])
 })
@@ -211,43 +235,21 @@ res<-res[order(res$Pvalue),]
 res<-res[,c(5,1,6,2,4)]
 colnames(res)<-c("Ensembl_ID","TechID","Symbol","Effect","Pvalue")
 
-saveRDS(res,out.path)
+saveRDS(res,analysis_path)
 
-#### Register the analysis: create a new analysis in the database  ####
+#### Update Analysis Table ####
 
-# Payload fields: http://10.7.50.21:8000/docs#/analyses/create_analysis_analyses__post
-
-new_analysis_payload <- list(
-  analysis_goal = analysis_goal,
-  analysis_scope = analysis_scope,
-  analysis_type = analysis_type,
-  analysis_subtype = paste0(assay1,",",assay2,"_",tissue),
-  analysis_method = analysis_method,
-  analysis_design = analysis_design,
-  parameters = list("Data.Molecular"=dataset_yaml$analysis_data,"Data.Covariates"=paste(covs2a,collapse=" + "),"Data.Filter"=paste0("PGS:",ths.opt)),
-  omics_layer = paste0(assay1,",",assay2),
-  disease_name = disease_of_interest,
-  datasets = list(dataset_id),
-  reference_sources = as.list(c(prot.anno_reference_id)),
-  input_files = list()
+update_analysis_payload<-list(
+  analysis_path = analysis_path,
+  analysis_code = analysis_code
 )
-
-new_analysis <- db_create_analysis(new_analysis_payload)
-
-update_analysis_payload <- list(
-  analysis_path = out.path,
-  analysis_code = analysis.path
-)
-
 db_update_analysis(new_analysis$analysis_id, update_analysis_payload)
 
-print(nrow(df.omics))
-print(covs2a)
+#### Inspection Analysis Results  ####
 
-View(db_list_analyses()[,c("analysis_id","analysis_path","disease_name")])
+print(disease_of_interest)
+nrow(df.omics)
+dim(res)
+head(res)
 
-
-
-
-
-
+View(db_list_analyses())
