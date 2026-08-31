@@ -1,0 +1,168 @@
+---
+title: "GWAS data and harmonization"
+author: "Sergio"
+date: "08/03/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(data.table)
+library(TwoSampleMR)
+library(MendelianRandomization)
+# library(MRInstruments)
+library(data.table)
+library(stringr)
+library(rtracklayer)
+library(liftOver)
+library(gwasvcf)
+
+source("../../../../Shared/imidomics/R/readme_generator.R")
+source("../../../../Shared/imidomics/R/config.R")
+imidomics_config <- readIMIDomicsConfig()
+root_data_dir <- imidomics_config$root_data_dir
+raw_data_dir <- imidomics_config$raw_data_dir
+
+if(root_data_dir == "/mnt/proteome/bioinformatics"){
+  Sys.setenv(R_ENVIRON_USER = "~/.Renviron")
+  Sys.setenv(PATH=paste("/mnt/nfs_home/smartinez/tools/bcftools/", Sys.getenv("PATH"), sep=":"))
+  plink_bin <- "/mnt/nfs_home/smartinez/tools/plink/plink"
+  set_plink(path = plink_bin)
+  plink_ref <- "/dev/shm/tmp_files/EUR"
+  refPanel <- fread("/dev/shm/tmp_files/EUR.bim")
+} else{
+  Sys.setenv(PATH=paste(Sys.getenv("PATH"), "/home/sergio/bin/", sep=":"))
+  Sys.setenv(PATH=paste(Sys.getenv("PATH"), "/home/sergio/bcftools/", sep=":"))
+  plink_ref <- "/tmp/ramdisk/"
+  refPanel <- fread("/tmp/ramdisk/EUR.bim")
+}
+
+tic <- Sys.time()
+```
+
+# Settings
+
+```{r}
+eSampleTable <- readRDS(paste0(root_data_dir, "/Data/Molecular/GeneExpression/WholeBlood/2024_IMX_P4V4_NovaSeqKPE_IA/Metadata/sampleTable.rds"))
+eFeatureTable <- readRDS(paste0(root_data_dir, "/Data/Molecular/GeneExpression/WholeBlood/2021_IMX_002_NovaSeqKPE_IA/Metadata/featureTable_afterQC.rds"))
+
+# Diseases
+diseases <- c("RA", "PS", "PSA", "CD", "UC", "SLE")
+
+# Instruments
+HAR <- vector("list", 3)
+INS <- list()
+INS[[1]] <- readRDS(paste0(root_data_dir, "/Projects/Internal_Projects/2021_IMX_TargetIdentification_vMR2/01_MR_eQTL/01_eQTL_Instruments/IS1.rds"))
+INS[[2]] <- readRDS(paste0(root_data_dir, "/Projects/Internal_Projects/2021_IMX_TargetIdentification_vMR2/01_MR_eQTL/01_eQTL_Instruments/IS2.rds"))
+INS[[3]] <- readRDS(paste0(root_data_dir, "/Projects/Internal_Projects/2021_IMX_TargetIdentification_vMR2/01_MR_eQTL/01_eQTL_Instruments/IS3.rds"))
+```
+
+# Analysis
+
+```{r}
+in.path <- paste0(root_data_dir, "/Projects/Internal_Projects/2022_IMX_IAGEN_Mining/Genotype/01_Features/01_clinicalAssociation/02_diseaseActivity/Scores/")
+in.path2 <- paste0(raw_data_dir, "/RAW_S3_Bucket_Synchronized/2022_IMXGRR_CSP4004_IA/04_HighQC/")
+```
+
+
+```{r}
+for(dis in diseases){
+  # out.dat <- fread(paste0(in.path, dis, ".PHENO1.glm.linear"), data.table = F)
+  # freqs <- fread(paste0(in.path2, dis, "/Freq.afreq"), data.table = F)
+  # 
+  # # Add other allele
+  # out.dat$A2 <- out.dat$REF
+  # to.change <- which(out.dat$A2==out.dat$A1)
+  # out.dat$A2[to.change] <- out.dat$ALT[to.change]
+  # 
+  # # Add effect allele freq
+  # out.dat$eaf <- freqs$ALT_FREQS[match(out.dat$ID, freqs$ID)]
+  # to.change <- which(out.dat$A1==out.dat$REF)
+  # out.dat$eaf[to.change] <- 1-out.dat$eaf[to.change]
+  # 
+  # # Create Allele1, and Allele2
+  # out.dat <- format_data(out.dat, type = "outcome",
+  #   #sep = " ",
+  #   snp_col = "ID",
+  #   beta_col = "BETA",
+  #   se_col = "SE",
+  #   effect_allele_col = "A1",
+  #   other_allele_col = "A2",
+  #   pval_col = "P",
+  #   min_pval = 1e-320,
+  #   samplesize_col = "OBS_CT", 
+  #   eaf_col = "eaf"
+  # )
+  # out.dat$outcome <- dis
+  # out.dat[,c("proxy.outcome", "target_snp.outcome", "proxy_snp.outcome", "target_a1.outcome", "target_a2.outcome", "proxy_a1.outcome", "proxy_a2.outcome")] <- NA
+  # out.dat <- out.dat[which(out.dat$beta.outcome!=0),]
+  # saveRDS(out.dat, file = paste0(root_data_dir, "/Projects/Internal_Projects/2021_IMX_TargetIdentification_vMR2/01_diseaseActivityMR_pQTL/GWAS_Formatted/", dis, ".rds"))
+  
+  # Copied the same MR outcome format from pQTL to eQTL folder, no need to recompute
+  out.dat <- readRDS(paste0(root_data_dir, "/Projects/Internal_Projects/2021_IMX_TargetIdentification_vMR2/01_diseaseActivityMR_eQTL/GWAS_Formatted/", dis, ".rds"))
+  
+  
+  for(i in 1:3){
+    
+    # Provisional instruments
+    ins <- INS[[i]]
+    ins$ID <- paste0(ins$chr.exposure, ":", ins$pos.exposure)
+    
+    # Extract SNPs
+    out <- out.dat[out.dat$SNP %in% ins$ID,]
+    
+    # Search LD proxies
+    if(nrow(out) < nrow(ins)){
+      snps.miss <- ins$ID[!ins$ID %in% out$SNP]
+      rsids <- ins$SNP[ins$ID %in% snps.miss]
+      aux <- gwasvcf::get_ld_proxies(unique(rsids),
+                bfile=plink_ref,
+                searchspace = NULL,
+                tag_r2 = 0.8,
+                threads = 5)
+      aux$prox.snp <- paste0(aux$CHR_B, ":", aux$BP_B)
+      aux <- aux[order(aux$R, decreasing = T),]
+      if(sum(aux$prox.snp %in% out.dat$SNP)>0){
+        aux <- aux[which(aux$prox.snp %in% out.dat$SNP),]
+        aux <- aux[!duplicated(aux$SNP_A),]
+        newlines <- out.dat[match(aux$prox.snp, out.dat$SNP),]
+        newlines$SNP <- paste0(aux$CHR_A, ":", aux$BP_A)
+        
+        # If the proxy effect allele is the same as B1, then the proxied effect corresponds to effect=A1, other=A2
+        A1matchesB1 <- newlines$effect_allele.outcome==aux$B1
+        A1matchesB2 <- newlines$effect_allele.outcome!=aux$B1
+        newlines$effect_allele.outcome[A1matchesB1] <- aux$A1[A1matchesB1]
+        newlines$other_allele.outcome[A1matchesB1] <- aux$A2[A1matchesB1]
+        
+        # Otherwise, we have to invert the A1 and A2 
+        newlines$effect_allele.outcome[A1matchesB2] <- aux$A2[A1matchesB2]
+        newlines$other_allele.outcome[A1matchesB2] <- aux$A1[A1matchesB2]
+        
+        newlines$proxy.outcome <- T
+        newlines$target_snp.outcome <- aux$SNP_A
+        newlines$proxy_snp.outcome <- aux$SNP_B
+        newlines$target_a1.outcome <- aux$A1
+        newlines$target_a2.outcome <- aux$A2
+        newlines$proxy_a1.outcome <- aux$B1
+        newlines$proxy_a2.outcome <- aux$B2
+        out <- rbind(out, newlines)
+      }
+    }# nrow(out) < nrow(ins)
+    
+    # Harmonize
+    ins$rsid <- ins$SNP
+    ins$SNP <- ins$ID
+    har <- harmonise_data(exposure_dat = ins, outcome_dat = out)
+    
+    # Filter palindromic SNPs with intermediate freqs
+    har <- har[which(har$ambiguous==F),]
+    
+    # Harmonisation
+    HAR[[i]] <- har
+  }
+  
+  # Save
+  saveRDS(HAR, file = paste0(root_data_dir, "/Projects/Internal_Projects/2021_IMX_TargetIdentification_vMR2/01_diseaseActivityMR_eQTL/01_Harmonized/", dis, ".rds"))
+}
+```

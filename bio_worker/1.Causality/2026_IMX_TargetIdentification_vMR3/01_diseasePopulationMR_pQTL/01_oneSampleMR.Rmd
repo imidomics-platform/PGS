@@ -1,0 +1,178 @@
+---
+
+title: "One sample pMR"
+author: "Sergio"
+date: '2022-07-28'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+source("../../../../Shared/imidomics/R/readme_generator.R")
+source("../../../../Shared/imidomics/R/CFMR.R")
+source("../../../../Shared/imidomics/R/config.R")
+imidomics_config <- readIMIDomicsConfig()
+root_data_dir <- imidomics_config$root_data_dir
+raw_data_dir <- imidomics_config$raw_data_dir
+Sys.setenv(PATH=paste(Sys.getenv("PATH"), "/home/sergio/bin/", sep=":"))
+Sys.setenv(PATH=paste(Sys.getenv("PATH"), "/home/sergio/bcftools/", sep=":"))
+library(data.table)
+library(ivreg)
+tic <- Sys.time()
+```
+
+# Data
+
+## Parameters
+
+```{r}
+diseases <- c("RA", "PS", "PSA", "CD", "UC", "SLE")
+da.vars <- c("AR_H_02", "PS_G_0302", "AP_I_020307", "EC_F_02", "CU_F_13", "LES_F_12")
+names(da.vars) <- diseases
+```
+
+
+## Proteomic data
+
+```{r}
+m1 <- readRDS(paste0(root_data_dir, "/Data/Molecular/Proteomics/Plasma/2021_IMX_001_SOMAscan41_IA/01_Raw/RFU_SomaLogicNormalized_toReferencePopulationUS.rds"))
+m2 <- readRDS(paste0(root_data_dir, "/Data/Molecular/Proteomics/Plasma/2021_IMX_001_SOMAscan41_IA/01_Raw/Mitigated_RFU_SomaLogicNormalized_toReferencePopulationUS.rds"))
+```
+
+## Clinical data
+
+```{r}
+# Processed BD
+DC <- readRDS(paste0(root_data_dir, "/Data/Clinical/2008_IMIDKIT_IA/04_subsetPreprocessed/IAP4V4/clinicalData_forPredictors.rds"))
+DC$imid <- DC$pathologyId 
+levels(DC$imid)[3] <- "CTRL"
+rownames(DC) <- DC$indivId
+DF <- readRDS(paste0(root_data_dir, "/Data/Clinical/2008_IMIDKIT_IA/04_subsetPreprocessed/IAP4V4/varInfo_forPredictors.rds"))
+```
+
+## Genetic data
+
+```{r}
+
+```
+
+## Metadata
+
+```{r}
+# Protein metadata
+pSampleTable <- readRDS(paste0(root_data_dir, "/Data/Molecular/Proteomics/Plasma/2021_IMX_001_SOMAscan41_IA/Metadata/sampleTable_afterQC.rds"))
+pFeatureTable <- readRDS(paste0(root_data_dir, "/Data/Molecular/Proteomics/Plasma/2021_IMX_001_SOMAscan41_IA/Metadata/featureTable.rds"))
+
+# Genotype metadata
+gSampleTable <- readRDS(paste0(root_data_dir, "/Data/Molecular/Genotype/2022_IMXGRR_CSP4004_IA/Metadata/sampleTable_afterQC.rds"))
+```
+
+## Principal components
+
+```{r}
+# Protein components
+p.pca.scores <- readRDS(paste0(root_data_dir, "/Data/Molecular/Proteomics/Plasma/2021_IMX_001_SOMAscan41_IA/DerivedFeatures/Quantitative/Principal_Components/Results/scaledPCA.rds"))
+p.pca.scores.sle <- readRDS(paste0(root_data_dir, "/Data/Molecular/Proteomics/Plasma/2021_IMX_001_SOMAscan41_IA/DerivedFeatures/Quantitative/Principal_Components/Results/scaledPCA_withSLE.rds"))
+
+# Genotype components
+g.pca.scores <- readRDS(paste0(root_data_dir, "/Data/Molecular/Genotype/2022_IMXGRR_CSP4004_IA/DerivedFeatures/Quantitative/Principal_Components/Results/Genetic_PCs.rds"))
+```
+
+## SampleIDs
+
+```{r}
+# Intersect of protein and genetic samples
+ids <- intersect(rownames(pSampleTable), rownames(g.pca.scores))
+```
+
+## Feature IDs
+
+```{r}
+featureOutliers <- readRDS(paste0(root_data_dir, "/Data/Molecular/Proteomics/Plasma/2021_IMX_001_SOMAscan41_IA/QualityControl/outlierFeatures.rds"))
+Fids <- pFeatureTable$AptName[pFeatureTable$Organism=="Human" & pFeatureTable$Type == "Protein"]
+```
+
+## Auxiliar dataframe
+
+```{r}
+aux.df <- data.frame(pSampleTable[ids,], DC[ids,], row.names = ids)
+aux.df[ids,paste0("P_PC", 1:60)] <- p.pca.scores[match(ids, rownames(p.pca.scores)),1:60]
+aux.df[ids,paste0("G_PC", 1:10)] <- g.pca.scores[match(ids, rownames(g.pca.scores)),1:10]
+```
+
+## Annotation
+
+```{r}
+ensembl.tss <- ensembl.tss <- readRDS(paste0(root_data_dir, "/Data/Molecular/Biological_Annotations/refTSS/SOMAscanProts_FinalTSSMapping_lift37.rds"))
+```
+
+# Analysis
+
+```{r}
+in.path0 <- paste0(raw_data_dir, "/RAW_S3_Bucket_Synchronized/2022_IMXGRR_CSP4004_IA/03_Imputed/VCF")
+in.path <- paste0(root_data_dir, "/Data/Molecular/Genotype/2022_IMXGRR_CSP4004_IA/01_Preprocessed/pQTL_BCF/")
+out.path <- paste0(root_data_dir, "/Projects/Internal_Projects/2021_IMX_TargetIdentification_vMR2/01_diseasePopulationMR_pQTL/01_OneSampleMR_CFMR/")
+in.path2 <- paste0(root_data_dir, "/Projects/Internal_Projects/2021_IMX_TargetIdentification_vMR2/01_diseasePopulationMR_pQTL/01_OneSampleMR_CFMR/")
+```
+
+## Prepare data.frame for 1 prot
+
+```{r}
+files <- list.files(paste0(root_data_dir, "/Projects/Internal_Projects/2021_IMX_TargetIdentification_vMR2/01_MR_pQTL_2023/01_pQTLs_Preprocessed/02_Filtered_Formatted"))
+
+RES <- lapply(diseases, function(x) list()); names(RES) <- diseases
+for(file in files){
+    
+  # Prot info
+  prot <- gsub(".rds", "", file)
+  apt.name <- paste0("seq.", gsub("_", ".", prot))
+  symb <- pFeatureTable$EntrezGeneSymbol[match(apt.name, pFeatureTable$AptName)]
+  # if(!symb %in% ensembl.tss$hgnc_symbol) next()
+  chr.prot <- unique(ensembl.tss$CHR[which(ensembl.tss$AptName==apt.name)])
+  if(chr.prot %in% c("X", "Y")) next()
+  
+  # Reference results for the protein
+  fn <- tempfile()
+  c <- readRDS(paste0(root_data_dir, "/Projects/Internal_Projects/2021_IMX_TargetIdentification_vMR2/01_MR_pQTL_2023/01_pQTLs_Preprocessed/02_Filtered_Formatted/", file))
+  c <- c[c$chr.exposure == chr.prot, ]
+  if(nrow(c)==0) next()
+  svars <- cbind(c$chr.exposure, c$pos.exposure)
+  fwrite(svars, file = fn, quote = F, row.names = F, col.names = F, sep = "\t")
+    
+  # Extract significant SNPs from chr1 file and read in with R
+  # system(paste0("bcftools index ", in.path, "chr", chr.prot, ".dose.bcf"))
+  system(paste0("bcftools view -R ", fn, " -Oz -o ", fn, " ", in.path, "chr", chr.prot, ".dose.bcf"))
+  a <- vcfR::read.vcfR(file = fn)
+  b <- t(vcfR::extract.gt(x = a, element = "DS", as.numeric = T))
+  rownames(b) <- gsub("0_", "", rownames(b))
+  colnames(b) <- gsub(":", "_", colnames(b))
+  gvars <- make.names(colnames(b))
+    
+  for(dis in diseases){
+    
+    # Merge data from genotype, protein and clinical
+    if(dis=="SLE"){
+      ids <- intersect(rownames(m2), rownames(b))
+      df <- data.frame(b[ids, ], Prot=m2[ids, apt.name], DA=DC[ids, da.vars[dis]])
+    } else{
+      ids <- intersect(rownames(m1), rownames(b))
+      df <- data.frame(b[ids, ], Prot=m1[ids, apt.name], DA=DC[ids, da.vars[dis]])
+    }
+    df <- df[!is.na(df$DA),]
+    
+    #
+    # CFI estimation
+    CFI  <- build_IV_sub_sample(k=5, G=df[,gvars], X=df[,"Prot"])
+    if(is.null(CFI)) next()
+    df[rownames(CFI), "CFI"] <- CFI
+    
+    #cross fitted IV regression
+    Y <- as.numeric(df$DA)
+    X <- df$Prot
+    CFI <- df$CFI
+    res <- ivreg(Y~X|CFI)
+    RES[[dis]][[prot]] <- res
+  }# dis
+}# prot
+for(dis in diseases) saveRDS(RES[[dis]], file = paste0("../../Results/01_diseasePopulationMR_pQTL/01_OneSampleMR_CFMR/", dis, ".rds"))
+```

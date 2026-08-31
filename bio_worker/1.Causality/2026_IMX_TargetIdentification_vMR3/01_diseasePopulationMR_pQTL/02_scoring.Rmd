@@ -1,0 +1,78 @@
+---
+title: "Results gathering"
+author: "Sergio"
+date: '2022-08-02'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Data
+
+## Parameters
+
+```{r}
+diseases <- c("RA", "PS", "PSA", "CD", "UC", "SLE")
+```
+
+## Metadata
+
+```{r}
+featureTable <- readRDS("../../../../../Data/Storage/Molecular/Proteomics/Plasma/2021_IMX_001_SOMAscan41_IA/Metadata/featureTable.rds")
+```
+
+
+## Results
+
+```{r}
+RES <- list()
+for(dis in diseases){
+  RES[[dis]] <- readRDS(paste0("../../Results/01_diseasePopulationMR_pQTL/01_OneSampleMR_CFMR/", dis, ".rds"))
+}
+```
+
+## Put results together
+
+```{r}
+# MR estimation results
+EST <- NULL
+for(dis in diseases){
+  EST[[dis]] <- do.call(rbind, lapply(names(RES[[dis]]), function(x){
+    res <- summary(RES[[dis]][[x]])
+    res <- data.frame(t(res$coefficients["X", ]))
+    names(res) <- c("Estimate", "StdErr", "TVAL", "PVAL")
+    apt.name <- paste0("seq.", gsub("_", ".", x))
+    symb <- featureTable$EntrezGeneSymbol[featureTable$AptName==apt.name]
+    cbind(Prot=x, Symb=symb, res)
+    }))
+  
+  EST[[dis]] <- EST[[dis]][order(EST[[dis]]$PVAL),]
+}
+
+# MR estimation results
+DIA <- NULL
+for(dis in diseases){
+  DIA[[dis]] <- do.call(rbind, lapply(names(RES[[dis]]), function(x){
+    res <- summary(RES[[dis]][[x]])
+    res <- data.frame(res$diagnostics)
+    res$Method <- rownames(res)
+    names(res) <- c("df1", "df2", "statistic", "PVAL", "Method")
+    apt.name <- paste0("seq.", gsub("_", ".", x))
+    symb <- featureTable$EntrezGeneSymbol[featureTable$AptName==apt.name]
+    cbind(Prot=x, Symb=symb, res)
+    }))
+}
+```
+
+
+# Analyze
+
+```{r}
+for(dis in diseases){
+  EST[[dis]] <- EST[[dis]][order(EST[[dis]]$PVAL),]
+  print(EST[[dis]])
+}
+```
+

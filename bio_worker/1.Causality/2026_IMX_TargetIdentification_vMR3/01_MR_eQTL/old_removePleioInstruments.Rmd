@@ -1,0 +1,105 @@
+---
+title: "eQTL instruments"
+author: "Sergio"
+date: "30/03/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(data.table)
+library(stringr)
+source("../../../../Shared/imidomics/R/readme_generator.R")
+source("../../../../Shared/imidomics/R/config.R")
+imidomics_config <- readIMIDomicsConfig()
+root_data_dir <- imidomics_config$root_data_dir
+raw_data_dir <- imidomics_config$raw_data_dir
+tic <- Sys.time()
+
+proj_dir <- "/Projects/Internal_Projects/2026_IMX_TargetIdentification_vMR3/01_MR_eQTL/"
+```
+
+# Settings
+
+## Pleiotropic regions
+
+```{r}
+transhub <- readxl::read_xlsx(path = paste0(root_data_dir, proj_dir, "/Annotations/Vosa_SupTables.xlsx"), sheet = 7, skip = 1)
+ple.snps <- transhub$SNP[transhub$`nr. of genes affected`>5]
+```
+
+## Choose all available genes
+
+```{r}
+# Keep only those that have TSS
+ensembl.tss <- readRDS(paste0(root_data_dir, proj_dir, "/Annotations/All_ENS_SYMB_TSS_v37.rds"))
+```
+
+
+# Merge chunks
+
+Optional if 01_instrumentsSelection.R is run in chunks
+
+```{r}
+# INS <- vector(mode = "list", length = 3)
+# for(i in 1:8){
+#   a <- readRDS(paste0(root_data_dir, proj_dir, "/02_Instruments/ALL_full", i, ".rds"))
+#   for(j in 1:3) INS[[j]] <- rbind(INS[[j]], a[[j]])
+# }
+# saveRDS(INS, file = paste0(root_data_dir, proj_dir, "/02_Instruments/ALL_full.rds"))
+```
+
+# Remove pleiotropic instruments
+
+```{r}
+# Get pleiotropics
+ins <- readRDS(file = paste0(root_data_dir, proj_dir, "/01_eQTL_Instruments/IS3_full.rds"))
+tab <- table(ins$SNP)
+pleiotropics <- names(which(tab>5))
+
+trackGenes <- vector(mode = "list", length = 3)
+INS <- list()
+for(i in 1:3){
+  ins <- readRDS(file = paste0(paste0(root_data_dir, proj_dir, "/01_eQTL_Instruments/IS", i, "_full.rds")))
+  
+  # Remove pleiotropical variants (instruments associated with >5 genes)
+  ins <- ins[!ins$SNP %in% pleiotropics,]
+  
+  # Remove only duplicates if we can know which is the strongest QTL (otherwise keep the insrument for the multiple genes)
+  ins <- ins[order(ins$pval.exposure),]
+  ins <- ins[!(ins$pval.exposure>1e-200 & duplicated(ins$SNP)),]
+  ins <- ins[order(ins$exposure),]
+  
+  # Annotate pleiotropic SNPs
+  ins$PleSNP <- ifelse(ins$SNP %in% ple.snps, T, F)
+  
+  # For each protein, remove pleiotropic region instruments if there are more instruments remaining
+  for(p in unique(ins$exposure)){
+    aux <- ins[ins$exposure == p, ]
+    if(sum(aux$PleSNP) > 0 & sum(aux$PleSNP) < nrow(aux)){
+      trackGenes[[i]][[p]] <- ins$SNP[which(ins$exposure == p & ins$PleSNP)]
+      ins <- ins[-which(ins$exposure == p & ins$PleSNP),]
+    }
+  }
+  
+  ins$rsid <- ins$SNP
+  INS[[i]] <- ins
+}
+saveRDS(INS, file = paste0(root_data_dir, proj_dir, "/02_Instruments/ALL.rds"))
+saveRDS(trackGenes, file = paste0(root_data_dir, proj_dir, "/02_Instruments/genesToReanalyze.rds"))
+```
+
+
+```{r}
+toc <- Sys.time()
+temps <- as.numeric(difftime(toc, tic, units='mins'))
+readme(path = paste0(root_data_dir, proj_dir, "/README"),
+       subanalisi = 2,
+       titol = "Instrument filtering",
+       autors = "Sergio",
+       lloc = "02_removePleioInstruments.Rmd",
+       temps = temps,
+       descripcio = "We remove pleiotropic variants based on the number of trans-eQTLs that were reported in Vosa's paper (removed those with >5 affected genes).",
+       altres = "")
+```
+

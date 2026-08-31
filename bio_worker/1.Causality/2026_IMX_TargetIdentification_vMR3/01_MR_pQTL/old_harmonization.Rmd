@@ -1,0 +1,832 @@
+---
+title: "GWAS data and harmonization"
+author: "Sergio"
+date: "08/03/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(data.table)
+library(TwoSampleMR)
+library(MendelianRandomization)
+# library(MRInstruments)
+library(data.table)
+library(stringr)
+library(rtracklayer)
+library(liftOver)
+library(gwasvcf)
+
+source("../../../../Shared/imidomics/R/readme_generator.R")
+source("../../../../Shared/imidomics/R/config.R")
+imidomics_config <- readIMIDomicsConfig()
+root_data_dir <- imidomics_config$root_data_dir
+raw_data_dir <- imidomics_config$raw_data_dir
+proj_dir0 <- "/Projects/Internal_Projects/2026_IMX_TargetIdentification_vMR3/"
+proj_dir <- "/Projects/Internal_Projects/2026_IMX_TargetIdentification_vMR3/01_MR_pQTL/"
+gwas_dir <- "/Projects/Internal_Projects/2021_ExternalDatasets_Mining/SNPs/01_Features/01_Clinical_Association/01_caseCtrl/"
+vcf_dir <- paste0(root_data_dir, proj_dir0, "/tmp_files/")
+dbfile <- paste0(vcf_dir, "dbfile")
+dbfile <- paste0(vcf_dir, "mydb.sqlite")
+tic <- Sys.time()
+```
+
+# Settings
+
+```{r}
+# Instruments
+HAR <- vector("list", 3)
+INS <- readRDS(paste0(root_data_dir, proj_dir, "/02_Instruments/ALL.rds"))
+
+# Plink settings
+if(root_data_dir == "/mnt/proteome/bioinformatics"){
+  Sys.setenv(PATH=paste("/mnt/nfs_home/smartinez/tools/bcftools/", Sys.getenv("PATH"), sep=":"))
+  plink_bin <- "/mnt/nfs_home/smartinez/tools/plink/plink"
+  set_plink(plink_bin)
+  set_bcftools(path = "/mnt/nfs_home/smartinez/tools/bcftools/bcftools")
+  plink_ref <- "/mnt/proteome/bioinformatics/Data/Molecular/Biological_Annotations/1000G/EUR"
+  # eur.bim <- fread("/dev/shm/tmp_files/EUR.bim")
+  eur.bim <- fread("/mnt/proteome/bioinformatics/Data/Molecular/Biological_Annotations/1000G/EUR.bim")
+} else{
+  Sys.setenv(PATH=paste("/home/sergio/", Sys.getenv("PATH"), sep=":"))
+  plink_bin <- "/home/sergio/bin/plink"
+  plink_ref <- "/media/bioinformatics/Data/Molecular/Biological_Annotations/1000G/EUR"
+  eur.bim <- fread("/media/bioinformatics/Data/Molecular/Biological_Annotations/1000G/EUR.bim")
+  set_plink(path = plink_bin)
+  set_bcftools(path = "/home/sergio/bcftools/bcftools")
+}
+```
+
+# RA Ishigaki 2022
+
+```{r}
+out.dat <- readRDS(file = paste0(root_data_dir, gwas_dir, "/RA_Ishigaki2022/RA.rds"))
+  
+for(i in 1:3){
+  
+  # Provisional instruments
+  ins <- INS[[i]]
+  ins$SNP <- ins$rsid
+  
+  # Extract SNPs
+  out <- out.dat[out.dat$SNP %in% ins$SNP,]
+  out <- out[!duplicated(out$SNP),]
+  
+  # Search LD proxies
+  if(nrow(out) < nrow(ins)){
+    rsids <- ins$SNP[!ins$SNP %in% out$SNP]
+    aux <- gwasvcf::get_ld_proxies(unique(rsids),
+              bfile = plink_ref,
+              searchspace = NULL,
+              tag_r2 = 0.8,
+              threads = 5)
+    aux$prox.snp <- aux$SNP_B
+    aux <- aux[order(aux$R, decreasing = T),]
+    if(sum(aux$prox.snp %in% out.dat$SNP)>0){
+      aux <- aux[which(aux$prox.snp %in% out.dat$SNP),]
+      aux <- aux[!duplicated(aux$SNP_A),]
+      newlines <- out.dat[match(aux$prox.snp, out.dat$SNP),]
+      
+      # If the proxy effect allele is the same as B1, then the proxied effect corresponds to effect=A1, other=A2
+      A1matchesB1 <- newlines$effect_allele.outcome==aux$B1
+      A1matchesB2 <- newlines$effect_allele.outcome!=aux$B1
+      newlines$effect_allele.outcome[A1matchesB1] <- aux$A1[A1matchesB1]
+      newlines$other_allele.outcome[A1matchesB1] <- aux$A2[A1matchesB1]
+      
+      # Otherwise, we have to invert the A1 and A2 
+      newlines$effect_allele.outcome[A1matchesB2] <- aux$A2[A1matchesB2]
+      newlines$other_allele.outcome[A1matchesB2] <- aux$A1[A1matchesB2]
+      
+      newlines$proxy.outcome <- T
+      newlines$target_snp.outcome <- aux$SNP_A
+      newlines$proxy_snp.outcome <- aux$SNP_B
+      newlines$target_a1.outcome <- aux$A1
+      newlines$target_a2.outcome <- aux$A2
+      newlines$proxy_a1.outcome <- aux$B1
+      newlines$proxy_a2.outcome <- aux$B2
+      add.names <- setdiff(names(newlines), names(out))
+      out[,add.names] <- NA
+      out <- rbind(out, newlines)
+    }
+  }
+  
+  # Harmonize
+  har <- harmonise_data(exposure_dat = ins, outcome_dat = out)
+  
+  # Filter palindromic SNPs with intermediate freqs
+  har <- har[which(har$palindromic==F | har$ambiguous==F),]
+  
+  # Harmonisation
+  HAR[[i]] <- har
+}
+
+# Save
+saveRDS(HAR, file = paste0(root_data_dir, proj_dir, "/03_Harmonized/RA_Ishigaki2022.rds"))
+```
+
+# RA Okada
+
+```{r}
+for(i in 1:3){
+  
+  # Provisional instruments
+  ins <- INS[[i]]
+  ins$SNP <- ins$rsid
+  
+  vcf <- query_gwas(vcf = paste0(root_data_dir, gwas_dir, "/RA_Okada2014/ieu-a-833.vcf.gz"), rsid = ins$SNP, proxies = "yes", dbfile = dbfile, tag_r2 = 0.8)
+  out.dat <- gwasglue::gwasvcf_to_TwoSampleMR(vcf, "outcome")
+  # out.dat <- vcf %>% vcf_to_tibble()
+  # out.dat <- out.dat %>% data.frame(SNP=.$ID, chr=.$seqnames, pos=.$start, 
+  #                                 beta.outcome=.$ES, se.outcome=.$SE, samplesize.outcome=.$SS, 
+  #                                 pval.outcome=10^-.$LP, eaf.outcome=.$AF, effect_allele.outcome=.$ALT, 
+  #                                 other_allele.outcome=.$REF, outcome = "Rheumatoid arthritis || id:ieu-a-833",
+  #                                 id.outcome = "ieu-a-833", originalname.outcome="Rheumatoid arthritis",
+  #                                 outcome.deprecated = "Rheumatoid arthritis ||  ||", mr.keep.outcome=TRUE, 
+  #                                 data_source.outcome="igd")
+    
+  # Old way doesn't work anymore
+  # out.dat2 <- extract_outcome_data(snps=ins$SNP, outcomes="ieu-a-833", opengwas_jwt = "eyJhbGciOiJSUzI1NiIsImtpZCI6ImFwaS1qd3QiLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiJhcGkub3Blbmd3YXMuaW8iLCJhdWQiOiJhcGkub3Blbmd3YXMuaW8iLCJzdWIiOiJzZXJnaW8ubWFydGluZXpAaW1pZG9taWNzLmNvbSIsImlhdCI6MTc1NDkyNDI5NSwiZXhwIjoxNzU2MTMzODk1fQ.eYHvSELrzLJk1m5R4fbr98so0En-228ZcLwoVcUo0buwAX5ilf5Jaa_SgiX6lAop01zVnr5-h6k4qhVapk4lYTFTFrjp4Dy3OumoDejAoAoHQViUHUHbJ3Ui9KY9qkaZgduW-kKxXLamaR77goekn67psQV2SgIo3rUo-9Il80-vjwDe0VlkuZRdhwimf2q2HOzlSrCxxeM2pa4FqnbNl-GYLckQAq8T4Oc93jqQ3EOqqGl-xIltFu1MX84plVrtSIZHg3qATNUmdfZ-EKkDLWubA972axLKy43_9fSBFp5raqltdpCNGSLO5yE75swQdyPmziP1gRnTk20QuZSaXw")
+  out.dat <- out.dat[out.dat$beta.outcome!=0,]
+  
+  # Harmonize
+  har <- harmonise_data(exposure_dat = ins, outcome_dat = out.dat)
+  
+  # Filter palindromic SNPs with intermediate freqs
+  har <- har[which(har$palindromic==F | har$ambiguous==F),]
+  
+  # Harmonisation
+  HAR[[i]] <- har
+}
+
+# Save
+saveRDS(HAR, file = paste0(root_data_dir, proj_dir, "/03_Harmonized/RA_Okada2014.rds"))
+```
+
+```{r}
+# vcf <- vcfR::read.vcfR(paste0(root_data_dir, "/Projects/Internal_Projects/2021_ExternalDatasets_Mining/Results/SNPs/01_Features/01_Clinical_Association/01_caseCtrl/RA_Okada2014/ieu-a-833.vcf.gz"))
+# tidy <- vcfR::vcfR2tidy(vcf, single_frame = T)
+# tidy$dat <- as.data.frame(tidy$dat)
+# tidy$dat$gt_LP <- as.numeric(tidy$dat$gt_LP)
+# tidy$dat$gt_ES <- as.numeric(tidy$dat$gt_ES)
+# tidy$dat$gt_SE <- as.numeric(tidy$dat$gt_SE)
+# tidy$dat$gt_SS <- as.numeric(tidy$dat$gt_SS)
+# tidy$dat$gt_AF <- as.numeric(tidy$dat$gt_AF)
+# out.dat <- format_data(tidy$dat, type = "outcome",
+#   snp_col = "ID",
+#   beta_col = "gt_ES",
+#   se_col = "gt_SE",
+#   effect_allele_col = "ALT",
+#   other_allele_col = "REF",
+#   eaf_col = "gt_AF",
+#   samplesize_col = "gt_SS", 
+#   pval_col = "gt_LP",
+#   log_pval = T,
+#   min_pval = 1e-320,
+# )
+# out.dat$exposure <- "RA_Okada2014"
+# saveRDS(out.dat, file = paste0(root_data_dir, proj_dir, "/GWAS_Formatted/RA_Okada2014.rds"))
+```
+
+# PS Dand
+
+```{r}
+out.dat <- readRDS(file = paste0(root_data_dir, gwas_dir, "/PS_Dand2025/PS.rds"))
+  
+for(i in 1:3){
+  
+  # Provisional instruments
+  ins <- INS[[i]]
+  ins$SNP <- ins$rsid
+  
+  # Extract SNPs
+  out <- out.dat[out.dat$SNP %in% ins$SNP,]
+  out <- out[!duplicated(out$SNP),]
+  
+  # Search LD proxies
+  if(nrow(out) < nrow(ins)){
+    rsids <- ins$SNP[!ins$SNP %in% out$SNP]
+    aux <- gwasvcf::get_ld_proxies(unique(rsids),
+              bfile = plink_ref,
+              searchspace = NULL,
+              tag_r2 = 0.8,
+              threads = 5)
+    aux$prox.snp <- aux$SNP_B
+    aux <- aux[order(aux$R, decreasing = T),]
+    if(sum(aux$prox.snp %in% out.dat$SNP)>0){
+      aux <- aux[which(aux$prox.snp %in% out.dat$SNP),]
+      aux <- aux[!duplicated(aux$SNP_A),]
+      newlines <- out.dat[match(aux$prox.snp, out.dat$SNP),]
+      
+      # If the proxy effect allele is the same as B1, then the proxied effect corresponds to effect=A1, other=A2
+      A1matchesB1 <- newlines$effect_allele.outcome==aux$B1
+      A1matchesB2 <- newlines$effect_allele.outcome!=aux$B1
+      newlines$effect_allele.outcome[A1matchesB1] <- aux$A1[A1matchesB1]
+      newlines$other_allele.outcome[A1matchesB1] <- aux$A2[A1matchesB1]
+      
+      # Otherwise, we have to invert the A1 and A2 
+      newlines$effect_allele.outcome[A1matchesB2] <- aux$A2[A1matchesB2]
+      newlines$other_allele.outcome[A1matchesB2] <- aux$A1[A1matchesB2]
+      
+      newlines$proxy.outcome <- T
+      newlines$target_snp.outcome <- aux$SNP_A
+      newlines$proxy_snp.outcome <- aux$SNP_B
+      newlines$target_a1.outcome <- aux$A1
+      newlines$target_a2.outcome <- aux$A2
+      newlines$proxy_a1.outcome <- aux$B1
+      newlines$proxy_a2.outcome <- aux$B2
+      add.names <- setdiff(names(newlines), names(out))
+      out[,add.names] <- NA
+      out <- rbind(out, newlines)
+    }
+  }
+  
+  # Harmonize
+  har <- harmonise_data(exposure_dat = ins, outcome_dat = out)
+  
+  # Filter palindromic SNPs with intermediate freqs
+  har <- har[which(har$palindromic==F | har$ambiguous==F),]
+  
+  # Harmonisation
+  HAR[[i]] <- har
+}
+
+# Save
+saveRDS(HAR, file = paste0(root_data_dir, proj_dir, "/03_Harmonized/PS_Dand2025.rds"))
+```
+
+# PS Stuart
+
+```{r}
+for(i in 1:3){
+  
+  # Provisional instruments
+  ins <- INS[[i]]
+  ins$SNP <- ins$rsid
+  
+  vcf <- query_gwas(vcf = paste0(root_data_dir, gwas_dir, "/PS_Stuart2022/ebi-a-GCST90019017.vcf.gz"), rsid = ins$SNP, proxies = "yes", dbfile = dbfile, tag_r2 = 0.8)
+  out.dat <- gwasglue::gwasvcf_to_TwoSampleMR(vcf, "outcome")
+  out.dat <- out.dat[out.dat$beta.outcome!=0,]
+  
+  # Harmonize
+  har <- harmonise_data(exposure_dat = ins, outcome_dat = out.dat)
+  
+  # Filter palindromic SNPs with intermediate freqs
+  har <- har[which(har$palindromic==F | har$ambiguous==F),]
+  
+  # Harmonisation
+  HAR[[i]] <- har
+}
+
+# Save
+saveRDS(HAR, file = paste0(root_data_dir, proj_dir, "/03_Harmonized/PS_Stuart2022.rds"))
+```
+
+```{r}
+# out.dat <- fread(paste0(root_data_dir, "/Projects/Internal_Projects/2021_ExternalDatasets_Mining/Results/SNPs/01_Features/01_Clinical_Association/01_caseCtrl/PS_Stuart2022_MetaAnalysis/GCST90019017_buildGRCh37.tsv"))
+# out.dat$MarkerName <- paste0(out.dat$chromosome, ":", out.dat$base_pair_location)
+# 
+# # Create Allele1, and Allele2
+# out.dat <- format_data(out.dat, type = "outcome",
+#   #sep = " ",
+#   snp_col = "MarkerName",
+#   beta_col = "beta",
+#   se_col = "standard_error",
+#   effect_allele_col = "effect_allele",
+#   other_allele_col = "other_allele",
+#   pval_col = "p_value",
+#   min_pval = 1e-320,
+# )
+# out.dat$outcome <- "PS_Stuart2022"
+# out.dat$samplesize.outcome <- 15967+28194
+# out.dat[,c("proxy.outcome", "target_snp.outcome", "proxy_snp.outcome", "target_a1.outcome", "target_a2.outcome", "proxy_a1.outcome", "proxy_a2.outcome")] <- NA
+# out.dat <- out.dat[which(out.dat$beta.outcome!=0),]
+# saveRDS(out.dat, file = paste0(root_data_dir, proj_dir, "/GWAS_Formatted/PS_Stuart2022.rds"))
+# out.dat <- readRDS(file = paste0(root_data_dir, proj_dir, "/GWAS_Formatted/PS_Stuart2022.rds"))
+
+
+# for(i in 1:3){
+#   
+#   # Provisional instruments
+#   ins <- INS[[i]]
+#   ins$SNP <- paste0(ins$chr.exposure, ":", ins$pos.exposure)
+#   
+#   # Extract SNPs
+#   out <- out.dat[out.dat$SNP %in% ins$SNP,]
+#   
+#   # Search LD proxies
+#   if(nrow(out) < nrow(ins)){
+#     snps.miss <- ins$SNP[!ins$SNP %in% out$SNP]
+#     rsids <- ins$rsid[ins$SNP %in% snps.miss]
+#     aux <- gwasvcf::get_ld_proxies(unique(rsids),
+#               bfile = plink_ref,
+#               searchspace = NULL,
+#               tag_r2 = 0.8,
+#               threads = 5)
+#     aux$prox.snp <- paste0(aux$CHR_B, ":", aux$BP_B)
+#     aux <- aux[order(aux$R, decreasing = T),]
+#     if(sum(aux$prox.snp %in% out.dat$SNP)>0){
+#       aux <- aux[which(aux$prox.snp %in% out.dat$SNP),]
+#       aux <- aux[!duplicated(aux$SNP_A),]
+#       newlines <- out.dat[match(aux$prox.snp, out.dat$SNP),]
+#       newlines$SNP <- paste0(aux$CHR_A, ":", aux$BP_A)
+#       
+#       # If the proxy effect allele is the same as B1, then the proxied effect corresponds to effect=A1, other=A2
+#       A1matchesB1 <- newlines$effect_allele.outcome==aux$B1
+#       A1matchesB2 <- newlines$effect_allele.outcome!=aux$B1
+#       newlines$effect_allele.outcome[A1matchesB1] <- aux$A1[A1matchesB1]
+#       newlines$other_allele.outcome[A1matchesB1] <- aux$A2[A1matchesB1]
+#       
+#       # Otherwise, we have to invert the A1 and A2 
+#       newlines$effect_allele.outcome[A1matchesB2] <- aux$A2[A1matchesB2]
+#       newlines$other_allele.outcome[A1matchesB2] <- aux$A1[A1matchesB2]
+#       
+#       newlines$proxy.outcome <- T
+#       newlines$target_snp.outcome <- aux$SNP_A
+#       newlines$proxy_snp.outcome <- aux$SNP_B
+#       newlines$target_a1.outcome <- aux$A1
+#       newlines$target_a2.outcome <- aux$A2
+#       newlines$proxy_a1.outcome <- aux$B1
+#       newlines$proxy_a2.outcome <- aux$B2
+#       out <- rbind(out, newlines)
+#     }
+#   }
+#   
+#   # Harmonize
+#   har <- harmonise_data(exposure_dat = ins, outcome_dat = out)
+#   
+#   # Filter palindromic SNPs with intermediate freqs
+#   har <- har[which(har$palindromic==F | har$ambiguous==F),]
+#   
+#   # Harmonisation
+#   HAR[[i]] <- har
+# }
+# 
+# # Save
+# saveRDS(HAR, file = paste0(root_data_dir, proj_dir, "/03_Harmonized/PS_Stuart2022.rds"))
+```
+
+# CD/UC de Lange
+
+```{r}
+for(i in 1:3){
+  
+  # Provisional instruments
+  ins <- INS[[i]]
+  ins$SNP <- ins$rsid
+  
+  vcf <- query_gwas(vcf = paste0(root_data_dir, gwas_dir, "/CD_deLange2017/ebi-a-GCST004132.vcf.gz"), rsid = ins$SNP, proxies = "yes", dbfile = dbfile, tag_r2 = 0.8)
+  out.dat <- gwasglue::gwasvcf_to_TwoSampleMR(vcf, "outcome")
+  out.dat <- out.dat[out.dat$beta.outcome!=0,]
+  
+  # Harmonize
+  har <- harmonise_data(exposure_dat = ins, outcome_dat = out.dat)
+  
+  # Filter palindromic SNPs with intermediate freqs
+  har <- har[which(har$palindromic==F | har$ambiguous==F),]
+  
+  # Harmonisation
+  HAR[[i]] <- har
+}
+
+# Save
+saveRDS(HAR, file = paste0(root_data_dir, proj_dir, "/03_Harmonized/CD_deLange2017.rds"))
+```
+
+```{r}
+for(i in 1:3){
+  
+  # Provisional instruments
+  ins <- INS[[i]]
+  ins$SNP <- ins$rsid
+  
+  vcf <- query_gwas(vcf = paste0(root_data_dir, gwas_dir, "/UC_deLange2017/ebi-a-GCST004133.vcf.gz"), rsid = ins$SNP, proxies = "yes", dbfile = dbfile, tag_r2 = 0.8)
+  out.dat <- gwasglue::gwasvcf_to_TwoSampleMR(vcf, "outcome")
+  out.dat <- out.dat[out.dat$beta.outcome!=0,]
+  
+  # Harmonize
+  har <- harmonise_data(exposure_dat = ins, outcome_dat = out.dat)
+  
+  # Filter palindromic SNPs with intermediate freqs
+  har <- har[which(har$palindromic==F | har$ambiguous==F),]
+  
+  # Harmonisation
+  HAR[[i]] <- har
+}
+
+# Save
+saveRDS(HAR, file = paste0(root_data_dir, proj_dir, "/03_Harmonized/UC_deLange2017.rds"))
+```
+
+# SLE Bentham
+
+```{r}
+for(i in 1:3){
+  
+  # Provisional instruments
+  ins <- INS[[i]]
+  ins$SNP <- ins$rsid
+  
+  vcf <- query_gwas(vcf = paste0(root_data_dir, gwas_dir, "/SLE_Bentham2015/ebi-a-GCST003156.vcf.gz"), rsid = ins$SNP, proxies = "yes", dbfile = dbfile, tag_r2 = 0.8)
+  out.dat <- gwasglue::gwasvcf_to_TwoSampleMR(vcf, "outcome")
+  out.dat <- out.dat[out.dat$beta.outcome!=0,]
+  
+  # Harmonize
+  har <- harmonise_data(exposure_dat = ins, outcome_dat = out.dat)
+  
+  # Filter palindromic SNPs with intermediate freqs
+  har <- har[which(har$palindromic==F | har$ambiguous==F),]
+  
+  # Harmonisation
+  HAR[[i]] <- har
+}
+
+# Save
+saveRDS(HAR, file = paste0(root_data_dir, proj_dir, "/03_Harmonized/SLE_Bentham2015.rds"))
+```
+
+# PsA Soomro 2022
+
+```{r}
+out.dat <- readRDS(file = paste0(root_data_dir, gwas_dir, "/PSA_Soomro2022/PSA.rds"))
+  
+for(i in 1:3){
+  
+  # Provisional instruments
+  ins <- INS[[i]]
+  ins$SNP <- ins$rsid
+  
+  # Extract SNPs
+  out <- out.dat[out.dat$SNP %in% ins$SNP,]
+  out <- out[!duplicated(out$SNP),]
+  
+  # Search LD proxies
+  if(nrow(out) < nrow(ins)){
+    rsids <- ins$SNP[!ins$SNP %in% out$SNP]
+    aux <- gwasvcf::get_ld_proxies(unique(rsids),
+              bfile = plink_ref,
+              searchspace = NULL,
+              tag_r2 = 0.8,
+              threads = 5)
+    aux$prox.snp <- aux$SNP_B
+    aux <- aux[order(aux$R, decreasing = T),]
+    if(sum(aux$prox.snp %in% out.dat$SNP)>0){
+      aux <- aux[which(aux$prox.snp %in% out.dat$SNP),]
+      aux <- aux[!duplicated(aux$SNP_A),]
+      newlines <- out.dat[match(aux$prox.snp, out.dat$SNP),]
+      
+      # If the proxy effect allele is the same as B1, then the proxied effect corresponds to effect=A1, other=A2
+      A1matchesB1 <- newlines$effect_allele.outcome==aux$B1
+      A1matchesB2 <- newlines$effect_allele.outcome!=aux$B1
+      newlines$effect_allele.outcome[A1matchesB1] <- aux$A1[A1matchesB1]
+      newlines$other_allele.outcome[A1matchesB1] <- aux$A2[A1matchesB1]
+      
+      # Otherwise, we have to invert the A1 and A2 
+      newlines$effect_allele.outcome[A1matchesB2] <- aux$A2[A1matchesB2]
+      newlines$other_allele.outcome[A1matchesB2] <- aux$A1[A1matchesB2]
+      
+      newlines$proxy.outcome <- T
+      newlines$target_snp.outcome <- aux$SNP_A
+      newlines$proxy_snp.outcome <- aux$SNP_B
+      newlines$target_a1.outcome <- aux$A1
+      newlines$target_a2.outcome <- aux$A2
+      newlines$proxy_a1.outcome <- aux$B1
+      newlines$proxy_a2.outcome <- aux$B2
+      add.names <- setdiff(names(newlines), names(out))
+      out[,add.names] <- NA
+      out <- rbind(out, newlines)
+    }
+  }
+  
+  # Harmonize
+  har <- harmonise_data(exposure_dat = ins, outcome_dat = out)
+  
+  # Filter palindromic SNPs with intermediate freqs
+  har <- har[which(har$palindromic==F | har$ambiguous==F),]
+  
+  # Harmonisation
+  HAR[[i]] <- har
+}
+
+# Save
+saveRDS(HAR, file = paste0(root_data_dir, proj_dir, "/03_Harmonized/PSA_Soomro2022.rds"))
+```
+
+# PsA Finn
+
+```{r}
+for(i in 1:3){
+  
+  # Provisional instruments
+  ins <- INS[[i]]
+  ins$SNP <- ins$rsid
+  
+  vcf <- query_gwas(vcf = paste0(root_data_dir, gwas_dir, "/PSA_Finn2021/finn-b-L12_PSORI_ARTHRO.vcf.gz"),, rsid = ins$SNP, proxies = "yes", dbfile = dbfile, tag_r2 = 0.8)
+  out.dat <- gwasglue::gwasvcf_to_TwoSampleMR(vcf, "outcome")
+  out.dat <- out.dat[out.dat$beta.outcome!=0,]
+  out.dat$samplesize.outcome <- 1637+212242
+  
+  # Harmonize
+  har <- harmonise_data(exposure_dat = ins, outcome_dat = out.dat)
+  
+  # Filter palindromic SNPs with intermediate freqs
+  har <- har[which(har$palindromic==F | har$ambiguous==F),]
+  
+  # Harmonisation
+  HAR[[i]] <- har
+}
+
+# Save
+saveRDS(HAR, file = paste0(root_data_dir, proj_dir, "/03_Harmonized/PSA_Finn2021.rds"))
+```
+
+# AD BuduAggrey 2023
+
+```{r}
+out.dat <- readRDS(file = paste0(root_data_dir, gwas_dir, "/AD_BuduAggrey2023/AD.rds"))
+  
+for(i in 1:3){
+  
+  # Provisional instruments
+  ins <- INS[[i]]
+  ins$SNP <- ins$rsid
+  
+  # Extract SNPs
+  out <- out.dat[out.dat$SNP %in% ins$SNP,]
+  out <- out[!duplicated(out$SNP),]
+  
+  # Search LD proxies
+  if(nrow(out) < nrow(ins)){
+    rsids <- ins$SNP[!ins$SNP %in% out$SNP]
+    aux <- gwasvcf::get_ld_proxies(unique(rsids),
+              bfile = plink_ref,
+              searchspace = NULL,
+              tag_r2 = 0.8,
+              threads = 5)
+    aux$prox.snp <- aux$SNP_B
+    aux <- aux[order(aux$R, decreasing = T),]
+    if(sum(aux$prox.snp %in% out.dat$SNP)>0){
+      aux <- aux[which(aux$prox.snp %in% out.dat$SNP),]
+      aux <- aux[!duplicated(aux$SNP_A),]
+      newlines <- out.dat[match(aux$prox.snp, out.dat$SNP),]
+      
+      # If the proxy effect allele is the same as B1, then the proxied effect corresponds to effect=A1, other=A2
+      A1matchesB1 <- newlines$effect_allele.outcome==aux$B1
+      A1matchesB2 <- newlines$effect_allele.outcome!=aux$B1
+      newlines$effect_allele.outcome[A1matchesB1] <- aux$A1[A1matchesB1]
+      newlines$other_allele.outcome[A1matchesB1] <- aux$A2[A1matchesB1]
+      
+      # Otherwise, we have to invert the A1 and A2 
+      newlines$effect_allele.outcome[A1matchesB2] <- aux$A2[A1matchesB2]
+      newlines$other_allele.outcome[A1matchesB2] <- aux$A1[A1matchesB2]
+      
+      newlines$proxy.outcome <- T
+      newlines$target_snp.outcome <- aux$SNP_A
+      newlines$proxy_snp.outcome <- aux$SNP_B
+      newlines$target_a1.outcome <- aux$A1
+      newlines$target_a2.outcome <- aux$A2
+      newlines$proxy_a1.outcome <- aux$B1
+      newlines$proxy_a2.outcome <- aux$B2
+      add.names <- setdiff(names(newlines), names(out))
+      out[,add.names] <- NA
+      out <- rbind(out, newlines)
+    }
+  }
+  
+  # Harmonize
+  har <- harmonise_data(exposure_dat = ins, outcome_dat = out)
+  
+  # Filter palindromic SNPs with intermediate freqs
+  har <- har[which(har$palindromic==F | har$ambiguous==F),]
+  
+  # Harmonisation
+  HAR[[i]] <- har
+}
+
+# Save
+saveRDS(HAR, file = paste0(root_data_dir, proj_dir, "/03_Harmonized/AD_BuduAggrey2023.rds"))
+```
+
+# AD Oliva
+
+```{r}
+out.dat <- readRDS(file = paste0(root_data_dir, gwas_dir, "/AD_Oliva2025/AD.rds"))
+
+
+for(i in 1:3){
+  
+  # Provisional instruments
+  ins <- INS[[i]]
+  ins$SNP <- ins$rsid
+  
+  # Extract SNPs
+  out <- out.dat[out.dat$SNP %in% ins$SNP,]
+  out <- out[!duplicated(out$SNP),]
+  
+  # Search LD proxies
+  if(nrow(out) < nrow(ins)){
+    rsids <- ins$SNP[!ins$SNP %in% out$SNP]
+    aux <- gwasvcf::get_ld_proxies(unique(rsids),
+              bfile = plink_ref,
+              searchspace = NULL,
+              tag_r2 = 0.8,
+              threads = 5)
+    aux$prox.snp <- aux$SNP_B
+    aux <- aux[order(aux$R, decreasing = T),]
+    if(sum(aux$prox.snp %in% out.dat$SNP)>0){
+      aux <- aux[which(aux$prox.snp %in% out.dat$SNP),]
+      aux <- aux[!duplicated(aux$SNP_A),]
+      newlines <- out.dat[match(aux$prox.snp, out.dat$SNP),]
+      
+      # If the proxy effect allele is the same as B1, then the proxied effect corresponds to effect=A1, other=A2
+      A1matchesB1 <- newlines$effect_allele.outcome==aux$B1
+      A1matchesB2 <- newlines$effect_allele.outcome!=aux$B1
+      newlines$effect_allele.outcome[A1matchesB1] <- aux$A1[A1matchesB1]
+      newlines$other_allele.outcome[A1matchesB1] <- aux$A2[A1matchesB1]
+      
+      # Otherwise, we have to invert the A1 and A2 
+      newlines$effect_allele.outcome[A1matchesB2] <- aux$A2[A1matchesB2]
+      newlines$other_allele.outcome[A1matchesB2] <- aux$A1[A1matchesB2]
+      
+      newlines$proxy.outcome <- T
+      newlines$target_snp.outcome <- aux$SNP_A
+      newlines$proxy_snp.outcome <- aux$SNP_B
+      newlines$target_a1.outcome <- aux$A1
+      newlines$target_a2.outcome <- aux$A2
+      newlines$proxy_a1.outcome <- aux$B1
+      newlines$proxy_a2.outcome <- aux$B2
+      add.names <- setdiff(names(newlines), names(out))
+      out[,add.names] <- NA
+      out <- rbind(out, newlines)
+    }
+  }
+  
+  # Harmonize
+  har <- harmonise_data(exposure_dat = ins, outcome_dat = out)
+  
+  # Filter palindromic SNPs with intermediate freqs
+  har <- har[which(har$palindromic==F | har$ambiguous==F),]
+  
+  # Harmonisation
+  HAR[[i]] <- har
+}
+
+# Save
+saveRDS(HAR, file = paste0(root_data_dir, proj_dir, "/03_Harmonized/AD_Oliva2025.rds"))
+```
+
+# SS Sakaue
+
+```{r}
+for(i in 1:3){
+  
+  # Provisional instruments
+  ins <- INS[[i]]
+  ins$SNP <- ins$rsid
+  
+  vcf <- query_gwas(vcf = paste0(root_data_dir, gwas_dir, "/SS_Sakaue2021/ebi-a-GCST90018920.vcf.gz"), rsid = ins$SNP, proxies = "yes", dbfile = dbfile, tag_r2 = 0.8)
+  out.dat <- gwasglue::gwasvcf_to_TwoSampleMR(vcf, "outcome")
+  out.dat <- out.dat[out.dat$beta.outcome!=0,]
+  out.dat$samplesize.outcome <- 1637+212242
+  
+  # Harmonize
+  har <- harmonise_data(exposure_dat = ins, outcome_dat = out.dat)
+  
+  # Filter palindromic SNPs with intermediate freqs
+  har <- har[which(har$palindromic==F | har$ambiguous==F),]
+  
+  # Harmonisation
+  HAR[[i]] <- har
+}
+
+# Save
+saveRDS(HAR, file = paste0(root_data_dir, proj_dir, "/03_Harmonized/SS_Sakaue2021.rds"))
+```
+
+
+```{r}
+out.dat <- readRDS(file = paste0(root_data_dir, gwas_dir, "/SS_Sakaue2021/SS.rds"))
+
+
+for(i in 1:3){
+  
+  # Provisional instruments
+  ins <- INS[[i]]
+  ins$SNP <- ins$rsid
+  
+  # Extract SNPs
+  out <- out.dat[out.dat$SNP %in% ins$SNP,]
+  out <- out[!duplicated(out$SNP),]
+  
+  # Search LD proxies
+  if(nrow(out) < nrow(ins)){
+    rsids <- ins$SNP[!ins$SNP %in% out$SNP]
+    aux <- gwasvcf::get_ld_proxies(unique(rsids),
+              bfile = plink_ref,
+              searchspace = NULL,
+              tag_r2 = 0.8,
+              threads = 5)
+    aux$prox.snp <- aux$SNP_B
+    aux <- aux[order(aux$R, decreasing = T),]
+    if(sum(aux$prox.snp %in% out.dat$SNP)>0){
+      aux <- aux[which(aux$prox.snp %in% out.dat$SNP),]
+      aux <- aux[!duplicated(aux$SNP_A),]
+      newlines <- out.dat[match(aux$prox.snp, out.dat$SNP),]
+      
+      # If the proxy effect allele is the same as B1, then the proxied effect corresponds to effect=A1, other=A2
+      A1matchesB1 <- newlines$effect_allele.outcome==aux$B1
+      A1matchesB2 <- newlines$effect_allele.outcome!=aux$B1
+      newlines$effect_allele.outcome[A1matchesB1] <- aux$A1[A1matchesB1]
+      newlines$other_allele.outcome[A1matchesB1] <- aux$A2[A1matchesB1]
+      
+      # Otherwise, we have to invert the A1 and A2 
+      newlines$effect_allele.outcome[A1matchesB2] <- aux$A2[A1matchesB2]
+      newlines$other_allele.outcome[A1matchesB2] <- aux$A1[A1matchesB2]
+      
+      newlines$proxy.outcome <- T
+      newlines$target_snp.outcome <- aux$SNP_A
+      newlines$proxy_snp.outcome <- aux$SNP_B
+      newlines$target_a1.outcome <- aux$A1
+      newlines$target_a2.outcome <- aux$A2
+      newlines$proxy_a1.outcome <- aux$B1
+      newlines$proxy_a2.outcome <- aux$B2
+      add.names <- setdiff(names(newlines), names(out))
+      out[,add.names] <- NA
+      out <- rbind(out, newlines)
+    }
+  }
+  
+  # Harmonize
+  har <- harmonise_data(exposure_dat = ins, outcome_dat = out)
+  
+  # Filter palindromic SNPs with intermediate freqs
+  har <- har[which(har$palindromic==F | har$ambiguous==F),]
+  
+  # Harmonisation
+  HAR[[i]] <- har
+}
+
+# Save
+saveRDS(HAR, file = paste0(root_data_dir, proj_dir, "/03_Harmonized/SS_Sakaue2021.rds"))
+```
+
+```{r}
+toc <- Sys.time()
+temps <- as.numeric(difftime(toc, tic, units='mins'))
+readme(path = paste0(root_data_dir, proj_dir, "/README"),
+       subanalisi = 4,
+       titol = "Outcome data preparation & harmonization",
+       autors = "Sergio",
+       lloc = "04_harmonization.Rmd",
+       temps = temps,
+       descripcio = "The final selected instruments are queried against the largest IMID GWASes to date in european population. When the exact same variant is not found, LD proxies are considered by using 1000G EUR reference.",
+       altres = "")
+```
+
+# Check differences with previous
+
+```{r}
+studies <- c("RA_Okada2014", "PS_Stuart2022", "CD_deLange2017", "UC_deLange2017", "SLE_Bentham2015", "PSA_Finn2021")
+global.results <- list.files(paste0(root_data_dir, "/Projects/Internal_Projects/2021_IMX_IAP4V4_Mining/_MultiOmics/01_crossTalk/pQTLs/Results/ByAptamer/Global"), full.names = T)
+prots <- gsub("(.*/)|(.rds)", "", global.results)
+RES <- expand.grid(studies, 1:3, prots)
+RES$TODO <- NA
+RES$TOREMOVE <- F
+for(s in studies){
+  har1 <- readRDS(paste0(root_data_dir, proj_dir, "/03_Harmonized/", s, ".rds"))
+  har2 <- readRDS(paste0(root_data_dir, proj_dir, "/03_Harmonized/20230618/", s, ".rds"))
+  for(j in 1:3){
+    if(s == "PS_Stuart2022") har2[[j]]$SNP <- har2[[j]]$rsid
+    for(p in unique(har1[[j]]$exposure)){
+      aux1 <- har1[[j]][har1[[j]]$exposure==p,]
+      aux2 <- har2[[j]][har2[[j]]$exposure==p,]
+      RES[RES$Var1==s & RES$Var2==j & RES$Var3==p, "TODO"] <- ifelse(all(aux1$SNP %in% aux2$SNP) & all(aux2$SNP %in% aux1$SNP), F, T)
+    }
+    for(p in unique(har2[[j]]$exposure)){
+      if(!p %in% har1[[j]]$exposure) RES[RES$Var1==s & RES$Var2==j & RES$Var3==p, "TOREMOVE"] <- T
+    }
+  }
+}
+table(RES$Var1, RES$Var2, RES$TODO)
+table(RES$Var1, RES$Var2, RES$TOREMOVE)
+saveRDS(RES, file = paste0(root_data_dir, proj_dir, "/03_Harmonized/checkToUpdate.rds"))
+```
+
+# Remove?
+
+```{r}
+# To remove estimation results from copied folder
+for(s in studies){
+  for(j in 1:3){
+    for(p in RES$Var3[which(RES$Var1==s & RES$Var2==j & RES$TOREMOVE==T)]){
+      system(paste0("rm ", root_data_dir, proj_dir, "/04_MREstimation/perGene/", p, "_", s, "_IS", j, "_Main.rds"))
+      system(paste0("rm ", root_data_dir, proj_dir, "/04_MREstimation/perGene/", p, "_", s, "_IS", j, "_Heterogeneity.rds"))
+      system(paste0("rm ", root_data_dir, proj_dir, "/04_MREstimation/perGene/", p, "_", s, "_IS", j, "_SNPs.rds"))
+      system(paste0("rm ", root_data_dir, proj_dir, "/04_MREstimation/perGene/", p, "_", s, "_IS", j, "_Pleiotropy.rds"))
+      system(paste0("rm ", root_data_dir, proj_dir, "/04_MREstimation/perGene/", p, "_", s, "_IS", j, "_LOO.rds"))
+      system(paste0("rm ", root_data_dir, proj_dir, "/04_MREstimation/perGene/", p, "_", s, "_IS", j, "_Steiger.rds"))
+    }
+  }
+}
+```
+

@@ -1,0 +1,82 @@
+---
+title: "Results gathering"
+author: "Sergio"
+date: '2022-08-02'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+source("../../../../Shared/imidomics/R/readme_generator.R")
+source("../../../../Shared/imidomics/R/config.R")
+imidomics_config <- readIMIDomicsConfig()
+root_data_dir <- imidomics_config$root_data_dir
+raw_data_dir <- imidomics_config$raw_data_dir
+tic <- Sys.time()
+```
+
+# Data
+
+## Parameters
+
+```{r}
+diseases <- c("RA", "PS", "PSA", "CD", "UC", "SLE")
+```
+
+## Metadata
+
+```{r}
+featureTable <- readRDS(paste0(root_data_dir, "/Data/Molecular/GeneExpression/WholeBlood/2021_IMX_002_NovaSeqKPE_IA/Metadata/featureTable_afterQC.rds"))
+```
+
+
+## Results
+
+```{r}
+RES <- list()
+for(dis in diseases){
+  RES[[dis]] <- readRDS(paste0(root_data_dir, "/Projects/Internal_Projects/2021_IMX_TargetIdentification_vMR2/01_diseasePopulationMR_eQTL/01_OneSampleMR_CFMR/", dis, ".rds"))
+}
+```
+
+## Put results together
+
+```{r}
+# MR estimation results
+EST <- NULL
+for(dis in diseases){
+  EST[[dis]] <- do.call(rbind, lapply(names(RES[[dis]]), function(x){
+    res <- summary(RES[[dis]][[x]])
+    res <- data.frame(t(res$coefficients["X", ]))
+    names(res) <- c("Estimate", "StdErr", "TVAL", "PVAL")
+    symb <- featureTable$MappedGene[featureTable$featureID==x]
+    cbind(Gene=x, Symb=symb, res)
+    }))
+  
+  EST[[dis]] <- EST[[dis]][order(EST[[dis]]$PVAL),]
+}
+
+# MR estimation results
+DIA <- NULL
+for(dis in diseases){
+  DIA[[dis]] <- do.call(rbind, lapply(names(RES[[dis]]), function(x){
+    res <- summary(RES[[dis]][[x]])
+    res <- data.frame(res$diagnostics)
+    res$Method <- rownames(res)
+    names(res) <- c("df1", "df2", "statistic", "PVAL", "Method")
+    symb <- featureTable$MappedGene[featureTable$featureID==x]
+    cbind(Gene=x, Symb=symb, res)
+    }))
+}
+```
+
+
+# Analyze
+
+```{r}
+for(dis in diseases){
+  EST[[dis]] <- EST[[dis]][order(EST[[dis]]$PVAL),]
+  print(EST[[dis]])
+}
+```
+

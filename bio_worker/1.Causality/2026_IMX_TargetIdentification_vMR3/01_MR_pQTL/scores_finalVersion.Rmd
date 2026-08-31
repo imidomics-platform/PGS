@@ -1,0 +1,497 @@
+---
+title: "pQTL-based causality scoring"
+author: "Sergio"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(stringr)
+source("../../../../Shared/imidomics/R/readme_generator.R")
+source("../../../../Shared/imidomics/R/config.R")
+imidomics_config <- readIMIDomicsConfig()
+root_data_dir <- imidomics_config$root_data_dir
+raw_data_dir <- imidomics_config$raw_data_dir
+proj_dir2 <- "/Projects/Internal_Projects/2025_IMX_PaperMR/Scores/pMR/"
+proj_dir3 <- "/Projects/Internal_Projects/2025_IMX_PaperMR/Scores/pMR_v2/"
+proj_dir <- "/Projects/Internal_Projects/2021_IMX_TargetIdentification_vMR2/01_MR_pQTL/"
+tic <- Sys.time()
+```
+
+# Data
+
+## Parameters
+
+```{r}
+studies <- c("RA_Okada2014", "PS_Stuart2022", "CD_deLange2017", "UC_deLange2017", "SLE_Bentham2015", "PSA_Finn2021")
+```
+
+## Druggable proteins
+
+```{r}
+druggable <- readxl::read_xlsx(paste0(root_data_dir, "/Data/Molecular/Biological_Annotations/DruggableGenome/NIHMS80906-supplement-Table_S1.xlsx"))
+```
+
+## MR results
+
+```{r}
+STE <- COL3 <- COL2 <- COL <- SNP <- HET <- PLE <- LOO <- RES <- list()
+for(name in studies){
+  STE[[name]] <- COL3[[name]] <- COL2[[name]] <- COL[[name]] <- SNP[[name]] <- HET[[name]] <- PLE[[name]] <- LOO[[name]] <- RES[[name]] <- list()
+  
+  
+  COL[[name]] <- readRDS(paste0(root_data_dir, proj_dir, "/05_Colocalization/", name, "_coloc.rds"))
+  COL2[[name]] <- readRDS(paste0(root_data_dir, proj_dir, "/05_Colocalization/", name, "_LDcheckOld.rds"))
+  COL3[[name]] <- readRDS(paste0(root_data_dir, proj_dir, "/05_Colocalization/", name, "_LDcheck.rds"))
+  for(is in c("IS1", "IS2", "IS3")){
+    RES[[name]][[is]] <- readRDS(paste0(root_data_dir, proj_dir, "/04_MREstimation/", name, "_", is, "_Main.rds"))
+    LOO[[name]][[is]] <- readRDS(paste0(root_data_dir, proj_dir, "/04_MREstimation/", name, "_", is, "_LOO.rds"))
+    PLE[[name]][[is]] <- readRDS(paste0(root_data_dir, proj_dir, "/04_MREstimation/", name, "_", is, "_Pleiotropy.rds"))
+    HET[[name]][[is]] <- readRDS(paste0(root_data_dir, proj_dir, "/04_MREstimation/", name, "_", is, "_Heterogeneity.rds"))
+    SNP[[name]][[is]] <- readRDS(paste0(root_data_dir, proj_dir, "/04_MREstimation/", name, "_", is, "_SNP.rds"))
+    STE[[name]][[is]] <- readRDS(paste0(root_data_dir, proj_dir, "/04_MREstimation/", name, "_", is, "_Steiger.rds"))
+    
+  }
+}
+```
+
+## Put results together
+
+```{r}
+res.list <- list()
+for(name in studies){
+  
+  # Put MR results together
+  res <- NULL
+  for(is in c("IS1", "IS2", "IS3")){
+    aux <- do.call(rbind, lapply(names(RES[[name]][[is]]), function(x) {
+      names(RES[[name]][[is]][[x]][[x]]) <- c("Method", "Estimate", "StdErr", "LL", "UL", "PVAL")
+      cbind(Prot = x, RES[[name]][[is]][[x]][[x]])
+    }))
+    res <- rbind(res, cbind(IS=is, aux))
+  }
+  res.list[[name]] <- res
+}
+```
+
+
+## Instrument tier
+
+```{r}
+# Annotate tier
+aux <- readRDS(paste0(root_data_dir, proj_dir, "/02_Instruments/ALL.rds"))
+aux <- do.call(rbind, aux)
+tier <- sapply(unique(aux$exposure), function(x) unique(aux[aux$exposure==x, "Tier"]))
+names(tier) <- gsub(".*-", "", names(tier))
+
+# Annotate symbol
+featureTable <- readRDS(paste0(root_data_dir, "/Data/Molecular/Proteomics/Plasma/2021_IMX_001_SOMAscan41_IA/Metadata/featureTable.rds"))
+apts <- names(tier)
+apts <- gsub("_", ".", apts)
+apts <- paste0("seq.", apts)
+hgnc_names <- featureTable$EntrezGeneSymbol[match(apts, featureTable$AptName)]
+names(hgnc_names) <- names(tier)
+```
+
+## Annotation
+
+```{r}
+newlist <- readRDS(paste0(root_data_dir, "/Projects/Internal_Projects/2025_IMX_PaperMR/Summaries/expandedAptamers.rds"))
+ensembl.tss <- readRDS(paste0(root_data_dir, "/Data/Molecular/Biological_Annotations/refTSS/SOMAscanProts_FinalTSSMapping_lift37.rds"))
+pQTL_counts <- readRDS(paste0(root_data_dir, proj_dir, "/Annotations/pQTLcounts_per_SNP.rds"))
+n.pQTL_counts <- names(pQTL_counts)
+# saveRDS(ensembl.tss, file = root_data_dir, proj_dir, "/Annotations/test.rds")
+har <- list()
+for(name in studies){
+  har[[name]] <- readRDS(paste0(root_data_dir, proj_dir, "/03_Harmonized/", name, ".rds"))
+}
+ple.regions <- list(MHC=c(6, 29645000, 33365000),
+                    ABO=c(9, 136131052, 136150605),
+                    CFH=c(1, 196621173, 196716634),
+                    ARHGEF3=c(3, 56761448, 57113296),
+                    BCHE=c(3, 165490692, 165555211),
+                    VTN=c(17, 26694305, 26697328),
+                    CFD=c(19, 859664, 863641),
+                    APOE=c(19, 45409053, 45412650)
+                    )
+```
+
+# Analyze
+
+## Summarize v2
+
+Modified: get P-values from each group of models 
+
+```{r}
+targets.list <- list()
+for(name in studies){
+  
+  # dis <- str_split(name, "_")[[1]][1]
+  res <- res.list[[name]]
+  
+  snps <- SNP[[name]]
+  
+  # Protein evidence classification
+  targets <- data.frame(Prot = unique(res$Prot), IS = NA, NIns1 = 0, NIns2 = 0, NIns3 = 0, Directionality = 0, PrimaryAverage = 0, PrimaryConcordant = F, Primary1 = NA, Primary2 = NA, Primary3 = NA, SecondaryAverage = 0, SecondaryConcordant = NA, Secondary1 = NA, Secondary2 = NA, Secondary3 = NA, RobustAverage = 0, RobustConcordant = NA, RAPS1 = NA, RAPS2 = NA, RAPS3 = NA, MoE1 = NA, MoE2 = NA, MoE3 = NA, AllDirectionConcordant = F, ProportionConcordant = 0, Heterogeneity_check1 = NA, Heterogeneity_check2 = NA, Heterogeneity_check3 = NA, Pleiotropy_check1 = NA, Pleiotropy_check2 = NA, Pleiotropy_check3 = NA, LOO_check1 = NA, LOO_check2 = NA, LOO_check3 = NA, Steiger_check1 = F, Steiger_check2 = F, Steiger_check3 = F, LDcheck_v1 = NA, LDcheck_v2 = NA, SimpleColoc_04 = NA, SimpleColoc_08 = NA, Tier = 0, PleiotropicRegions1 = NA, PleiotropicRegions2 = NA, PleiotropicRegions3 = NA, RankingScore = 0, row.names=unique(res$Prot))
+  
+  for(prot in unique(res$Prot)){
+    
+    # The main results for this protein
+    aux <- res[res$Prot==prot,]
+    
+    # Fix any NAN
+    if(sum(is.nan(aux$PVAL))>0) aux$PVAL[is.nan(aux$PVAL)] <- 1
+    
+    # Any 0s?
+    if(any(aux$PVAL==0)){
+      print(paste0(prot, " in ", name, " has a 0"))
+      aux$PVAL[aux$PVAL==0] <- 1E-100
+    }
+    
+    # IS
+    targets$IS[targets$Prot==prot] <- length(unique(aux$IS))
+    
+    # Compute statistics
+    for(is in unique(aux$IS)){
+      
+      # IS
+      IS.num <- as.numeric(gsub("IS","", is))
+      
+      # NIns
+      targets[targets$Prot==prot, paste0("NIns", IS.num)] <- length(snps[[is]][[prot]][[prot]])
+      
+      # Pleiotropic region?
+      aux.har <- har[[name]][[IS.num]]
+      snps.prot <- SNP[[name]][[is]][[prot]][[prot]]
+      regs <- character(0)
+      pleiotropy.number <- numeric(length(snps.prot))
+
+      for(snp in 1:length(snps.prot)){
+        snp.chr <- aux.har$chr.exposure[aux.har$rsid==snps.prot[snp]][1]
+        snp.pos <- aux.har$pos.exposure[aux.har$rsid==snps.prot[snp]][1]
+        
+        # Is the SNP in any pleiotropic region?
+        snp.reg <- sapply(ple.regions, function(x) as.numeric(snp.chr)==x[1] & snp.pos >= x[2] & snp.pos <= x[3])
+        if(any(snp.reg)) regs <- c(regs, names(snp.reg)[snp.reg==T])
+        
+        # # How many proteins is it associated to?
+        # idx <- grep(paste0(snp.chr,":", snp.pos), n.pQTL_counts, perl = T)
+        # if(length(idx)==1) pleiotropy.number[snp] <- pQTL_counts[idx]
+      }
+      
+      # Get all pleiotropic regions involved in the instruments of the protein (for each IS)
+      if(length(regs)>0) targets[prot, paste0("PleiotropicRegions", IS.num)] <- paste0(unique(regs), collapse=";")
+
+      #### Primary ####
+      #### Wald ratio case ####
+      if("Wald ratio" %in% aux$Method[aux$IS==is]){
+        targets[prot, paste0("Primary", IS.num)] <- -log10(aux$PVAL[aux$IS==is & aux$Method=="Wald ratio"])
+        
+        #### Inverse variance weighted case (2 instruments) ####
+      } else if("Inverse variance weighted" %in% aux$Method[aux$IS==is]){
+        a <- -log10(aux$PVAL[aux$IS==is & aux$Method=="Inverse variance weighted"])
+        targets[prot, paste0("Primary", IS.num)] <- a
+        
+        # Heterogeneity check
+        het <- HET[[name]][[is]][[prot]][[prot]]
+        if("pval" %in% names(het)){
+          targets[prot, paste0("Heterogeneity_check", IS.num)] <- ifelse(het$pval[1] > 0.05, T, F)
+        } else{
+          targets[prot, paste0("Heterogeneity_check", IS.num)] <- ifelse(het[het$method=="Inverse variance weighted", "Q_pval"] > 0.05, T, F)
+        }  
+        
+        # Pleiotropy check
+        ple <- PLE[[name]][[is]][[prot]][[prot]]
+        if(nrow(ple)>0) if(!is.na(ple$pval)) targets[prot, paste0("Pleiotropy_check", IS.num)] <- ifelse(ple$pval > 0.05, T, F)
+        
+        # LOO check
+        loo <- LOO[[name]][[is]][[prot]][[prot]]
+        if(all(!is.nan(loo$p))) targets[prot, paste0("LOO_check", IS.num)] <- ifelse(all(loo$p < 0.1 & (all(sign(loo$b)==1 | all(sign(loo$b)==-1)))), T, F)
+        
+        #### IVW case (3-5 instruments) ####
+      } else if("IVW" %in% aux$Method[aux$IS==is]){
+        targets[prot, paste0("Primary", IS.num)] <- -log10(aux$PVAL[aux$IS==is & aux$Method=="IVW"])
+        targets[prot, paste0("Secondary", IS.num)] <- mean(-log10(aux$PVAL[aux$IS==is & aux$Method %in% c("MR-Egger", "Weighted median", "Simple median")]))
+        
+        # Heterogeneity check
+        het <- HET[[name]][[is]][[prot]][[prot]]
+        if("pval" %in% names(het)){
+          targets[prot, paste0("Heterogeneity_check", IS.num)] <- ifelse(het$pval[1] > 0.05, T, F)
+        } else{
+          targets[prot, paste0("Heterogeneity_check", IS.num)] <- ifelse(het[het$method=="Inverse variance weighted", "Q_pval"] > 0.05, T, F)
+        }  
+        
+        # Pleiotropy check
+        ple <- PLE[[name]][[is]][[prot]][[prot]]
+        if(nrow(ple)>0) if(!is.na(ple$pval)) targets[prot, paste0("Pleiotropy_check", IS.num)] <- ifelse(ple[, "pval"] > 0.05, T, F)
+        
+        # LOO check
+        loo <- LOO[[name]][[is]][[prot]][[prot]]
+        if(all(!is.nan(loo$p))) targets[prot, paste0("LOO_check", IS.num)] <- ifelse(all(loo$p < 0.1 & (all(sign(loo$b)==1 | all(sign(loo$b)==-1)))), T, F)
+      }
+      
+      #### Robust (>5 instruments) ####
+      if("RAPS" %in% aux$Method[aux$IS==is]){
+        # RAPS
+        targets[prot, paste0("RAPS", IS.num)] <- -log10(aux$PVAL[aux$IS==is & aux$Method=="RAPS"])
+        
+        # MoW
+        targets[prot, paste0("MoE", IS.num)] <- -log10(aux$PVAL[aux$IS==is][7])
+        
+        # Secondary
+        targets[prot, paste0("Secondary", IS.num)] <- mean(-log10(aux$PVAL[aux$IS==is & aux$Method %in% c("MR-Egger", "Weighted median", "Simple median")]))
+      } 
+      
+      # Steiger MR check (>20% of SNPs detected with reverse direction)
+      ste <- STE[[name]][[is]][[prot]]
+      ste <- ste[ste$exposure==prot,]
+      if(sum(ste$correct_causal_direction==F)/length(ste$correct_causal_direction)<0.2) targets[prot, paste0("Steiger_check", IS.num)] <- T
+      
+    } #is
+    
+        
+    # Check consistent directionality primary
+    estimates <- aux$Estimate[aux$Method %in% c("Wald ratio", "Inverse variance weighted", "IVW")]
+    pvals <- aux$PVAL[aux$Method %in% c("Wald ratio", "Inverse variance weighted", "IVW")]
+    if(all(sign(estimates) == 1) | all(sign(estimates) == -1)){
+      targets[prot, "PrimaryConcordant"] <- T
+      targets[prot, "PrimaryAverage"] <- mean(-log10(pvals))
+    } else{
+      targets[prot, "Primary1"] <- targets[prot, "Primary2"] <- targets[prot, "Primary3"] <- 0
+    }
+    
+    # Check consistent directionality secondary
+    if("RAPS" %in% aux$Method){
+      idx <- which(aux$Method=="RAPS")
+      estimates <- aux$Estimate[c(idx, idx+1)]
+      pvals <- aux$PVAL[c(idx, idx+1)]
+      if(all(sign(estimates) == 1) | all(sign(estimates) == -1)){
+        targets[prot, "RobustConcordant"] <- T
+        targets[prot, "RobustAverage"] <- mean(-log10(pvals))
+      } else {
+        targets[prot, "RobustConcordant"] <- F
+        targets[prot, "RAPS1"] <- targets[prot, "RAPS2"] <- targets[prot, "RAPS3"] <- 0
+        targets[prot, "MoE1"] <- targets[prot, "MoE2"] <- targets[prot, "MoE3"] <- 0
+      }
+    }
+    if("IVW" %in% aux$Method){
+      idx <- which(aux$Method %in% c("Simple median", "Weighted median", "MR-Egger"))
+      estimates <- aux$Estimate[idx]
+      pvals <- aux$PVAL[idx]
+      if(all(sign(estimates) == 1) | all(sign(estimates) == -1)){
+        targets[prot, "SecondaryConcordant"] <- T
+        targets[prot, "SecondaryAverage"] <- mean(-log10(pvals))
+      } else {
+        targets[prot, "SecondaryConcordant"] <- F
+        targets[prot, "Secondary1"] <- targets[prot, "Secondary2"] <- targets[prot, "Secondary3"] <- 0
+      }
+    }
+    
+    # All concordant results
+    if("(intercept)" %in% aux$Method){
+      estimates <- aux$Estimate[!grepl("(intercept)", aux$Method)]
+      if(all(sign(estimates) == 1) | 
+       all(sign(estimates) == -1)) targets[prot, "AllDirectionConcordant"] <- T
+    } else{
+      estimates <- aux$Estimate
+      if(all(sign(estimates) == 1) | 
+       all(sign(estimates) == -1)) targets[prot, "AllDirectionConcordant"] <- T
+    }
+    
+    # Percentage of concordant results with significance
+    if(targets[prot, "PrimaryConcordant"] == T){
+      correct.sign <- unique(sign(aux$Estimate[aux$Method %in% c("Wald ratio", "Inverse variance weighted", "IVW")]))
+      targets[prot, "Directionality"] <- correct.sign
+      
+      if("(intercept)" %in% aux$Method){
+        aux <- aux[aux$Method!="(intercept)",]
+        correct.estimates <- aux$Estimate[aux$PVAL<0.05 & sign(aux$Estimate) == correct.sign]
+        prop.signif <- length(correct.estimates)/nrow(aux)
+        targets[prot, "ProportionConcordant"] <- prop.signif
+      } else{
+        correct.estimates <- aux$Estimate[aux$PVAL<0.05 & sign(aux$Estimate) == correct.sign]
+        prop.signif <- length(correct.estimates)/nrow(aux)
+        targets[prot, "ProportionConcordant"] <- prop.signif
+      }
+    }
+      
+    # Colocalization simple
+    if(!is.null(COL[[name]][[prot]])){
+      probs <- sapply(COL[[name]][[prot]], function(x) x$summary["PP.H4.abf"])
+      targets[prot, "SimpleColoc_04"] <- ifelse(any(probs > 0.4), T, F)
+    }
+    if(!is.null(COL[[name]][[prot]])){
+      probs <- sapply(COL[[name]][[prot]], function(x) x$summary["PP.H4.abf"])
+      targets[prot, "SimpleColoc_08"] <- ifelse(any(probs > 0.8), T, F)
+    }
+    
+    # LDcheck v1 (old version)
+     if(!is.null(COL2[[name]][[prot]])){
+       targets[prot, "LDcheck_v1"] <- ifelse(any(COL2[[name]][[prot]]==T), T, F)
+     }
+    
+     # LDcheck v2 (new version)
+     if(!is.null(COL3[[name]][[prot]])){
+       targets[prot, "LDcheck_v2"] <- ifelse(any(COL3[[name]][[prot]]==T), T, F)
+     }
+    
+  }#prot
+  
+  targets.list[[gsub("_.*", "", name)]] <- targets
+}#name
+saveRDS(targets.list, file = paste0(root_data_dir, proj_dir, "/06_Scoring/statisticsObject_v2.rds"))
+```
+
+
+## Scoring vA
+
+This is the final choice
+
+```{r}
+targets.list <- readRDS(paste0(root_data_dir, proj_dir, "/06_Scoring/statisticsObject_v2.rds"))
+for(name in studies){
+  
+  targets <- targets.list[[gsub("_.*", "", name)]]
+    
+  t <- -log10(0.05/nrow(targets))
+  
+  # Target score (new max: 40)
+  targets$RankingScore <- 0
+  
+  ## Consistent directionality (+2)
+  con <- targets$Prot[which(targets$AllDirectionConcordant==T)]
+  if(length(con)>0) targets[con, "RankingScore"] <- targets[con, "RankingScore"] +2
+  
+  ## Consistent primary directionality -> proportion of significant results in the primary direction (+2, 4)
+  targets$RankingScore <- targets$RankingScore + 2*targets$ProportionConcordant
+  
+  ## Robust significance ranking as main contribution if possible (+14, 18)
+  for(j in c(1.3, t, 7, 10)){
+    con <- targets$Prot[which(targets$RobustConcordant==T & targets$RobustAverage>j)]
+    if(length(con)>0) targets[con, "RankingScore"] <- targets[con, "RankingScore"] + 2
+  }
+  if(length(con)>0){
+    normps <- targets[con, "RobustAverage"]/max(targets[con, "RobustAverage"])
+    targets[con, "RankingScore"] <- targets[con, "RankingScore"] + 6*normps
+  }
+  
+  ## If robust and secondary not available, Primary significance ranking (+10)
+  for(j in c(1.3, t, 7, 10)){
+    con <- targets$Prot[which(is.na(targets$RobustConcordant) & is.na(targets$SecondaryConcordant) & targets$PrimaryConcordant==T & targets$PrimaryAverage>j)]
+    if(length(con)>0) targets[con, "RankingScore"] <- targets[con, "RankingScore"] + 1
+  }
+  if(length(con)>0){
+    normps <- targets[con, "PrimaryAverage"]/max(targets[con, "PrimaryAverage"])
+    targets[con, "RankingScore"] <- targets[con, "RankingScore"] + 6*normps
+  }
+  
+  ## If only robust not available, Primary and Secondary share the significance ranking (+12 in total)
+  ## First Primary (+6)
+  for(j in c(1.3, t, 7, 10)){
+    con <- targets$Prot[which(is.na(targets$RobustConcordant) & !is.na(targets$SecondaryConcordant) & targets$PrimaryConcordant==T & targets$PrimaryAverage>j)]
+    targets[con, "RankingScore"] <- targets[con, "RankingScore"] + 1
+  }
+  if(length(con)>0){
+    normps <- targets[con, "PrimaryAverage"]/max(targets[con, "PrimaryAverage"])
+    targets[con, "RankingScore"] <- targets[con, "RankingScore"] + 2*normps
+  }
+  
+  ## Now Secondary (+6)
+  for(j in c(1.3, t, 7, 10)){
+    con <- targets$Prot[which(is.na(targets$RobustConcordant) & targets$SecondaryConcordant==T & targets$SecondaryAverage>j)]
+    targets[con, "RankingScore"] <- targets[con, "RankingScore"] + 1
+  }
+  if(length(con)>0){
+    normps <- targets[con, "SecondaryAverage"]/max(targets[con, "SecondaryAverage"])
+    targets[con, "RankingScore"] <- targets[con, "RankingScore"] + 2*normps
+  }
+  
+  ## Ok heterogeneity (+-3, 21)
+  for(i in 1:3){
+    con <- targets$Prot[which(targets[,paste0("Heterogeneity_check", i)]==F)]
+    if(length(con)>0) targets[con, "RankingScore"] <- targets[con, "RankingScore"] -1
+      
+    con <- targets$Prot[which(targets[,paste0("Heterogeneity_check", i)]==T)]
+    if(length(con)>0) targets[con, "RankingScore"] <- targets[con, "RankingScore"] +1
+  }
+  
+  ## Ok pleiotropy (+-3, 24)
+  for(i in 1:3){
+    con <- targets$Prot[which(targets[,paste0("Pleiotropy_check", i)]==F)]
+    if(length(con)>0) targets[con, "RankingScore"] <- targets[con, "RankingScore"] -1
+      
+    con <- targets$Prot[which(targets[,paste0("Pleiotropy_check", i)]==T)]
+    if(length(con)>0) targets[con, "RankingScore"] <- targets[con, "RankingScore"] +1
+  }
+  
+  ## Ok LOO (+-3, 27)
+  for(i in 1:3){
+    con <- targets$Prot[which(targets[,paste0("LOO_check", i)]==F)]
+    if(length(con)>0) targets[con, "RankingScore"] <- targets[con, "RankingScore"] -1
+      
+    con <- targets$Prot[which(targets[,paste0("LOO_check", i)]==T)]
+    if(length(con)>0) targets[con, "RankingScore"] <- targets[con, "RankingScore"] +1
+  }
+  
+  ## Directional test MR penalization (up to -9)
+  for(i in 1:3){
+    con <- targets$Prot[which(targets[,paste0("Steiger_check", i)]==F)]
+    if(length(con)>0) targets[con, "RankingScore"] <- targets[con, "RankingScore"] -3
+  }
+  
+  ## LDcheck failed penalization (+-3, 30)
+  con <- targets$Prot[which(targets$LDcheck_v1==F)]
+  if(length(con)>0) targets[con, "RankingScore"] <- targets[con, "RankingScore"] -3
+    
+  con <- targets$Prot[which(targets$LDcheck_v1==T)]
+  if(length(con)>0) targets[con, "RankingScore"] <- targets[con, "RankingScore"] +3
+  
+  ## Simple coloc (+-2, 32)
+  con <- targets$Prot[which(targets$SimpleColoc_04==F)]
+  if(length(con)>0) targets[con, "RankingScore"] <- targets[con, "RankingScore"] -2
+  con <- targets$Prot[which(targets$SimpleColoc_04==T)]
+  if(length(con)>0) targets[con, "RankingScore"] <- targets[con, "RankingScore"] + 2
+  
+  ## Simple coloc strong (+-2, 34)
+  con <- targets$Prot[which(targets$SimpleColoc_08==F)]
+  if(length(con)>0) targets[con, "RankingScore"] <- targets[con, "RankingScore"] -2
+  con <- targets$Prot[which(targets$SimpleColoc_08==T)]
+  if(length(con)>0) targets[con, "RankingScore"] <- targets[con, "RankingScore"] + 2
+  
+  ## Tier scoring (+8, 42)
+  targets$Tier <- tier[match(targets$Prot, names(tier))]
+  targets$Cis <- targets$Tier %in% c(1,2,4)
+  con <- targets$Prot[targets$Tier == 1]
+  if(length(con)>0) targets[con, "RankingScore"] <- targets[con, "RankingScore"] + 8
+  con <- targets$Prot[targets$Tier == 2]
+  if(length(con)>0) targets[con, "RankingScore"] <- targets[con, "RankingScore"] + 6
+  con <- targets$Prot[targets$Tier == 3]
+  if(length(con)>0) targets[con, "RankingScore"] <- targets[con, "RankingScore"] + 4
+  con <- targets$Prot[targets$Tier == 4]
+  if(length(con)>0) targets[con, "RankingScore"] <- targets[con, "RankingScore"] + 2
+  con <- targets$Prot[targets$Tier == 5]
+  if(length(con)>0) targets[con, "RankingScore"] <- targets[con, "RankingScore"] + 1
+  
+  # -2 points penalization for each instrument selection with instruments from pleiotropic regions (up to -6)
+  targets$RankingScore <- targets$RankingScore - 2*!is.na(targets$PleiotropicRegions1) - 2*!is.na(targets$PleiotropicRegions2) - 2*!is.na(targets$PleiotropicRegions3)
+    
+  # Sort by score
+  targets <- targets[order(targets$RankingScore, decreasing = T),]
+  
+  # Set as 0 if there is no significance at all
+  con <- targets$Prot[!apply(targets[, c(paste0("Primary", 1:3), paste0("Secondary", 1:3), paste0("RAPS", 1:3), paste0("MoE", 1:3))], 1, function(x) any(x>1.3, na.rm = T))]
+  targets[con, "RankingScore"] <- 0
+  con <- targets$Prot[targets$Directionality==0]
+  targets[con, "RankingScore"] <- 0
+  targets$RankingScore[targets$RankingScore<0] <- 0
+  
+  # Extra annotations
+  targets <- data.frame(Symbol = hgnc_names[match(targets$Prot, names(hgnc_names))], targets)
+  targets$Druggable <- targets$Symbol %in% druggable$hgnc_names
+  targets$NewAptamer <- targets$Prot %in% gsub("\\.", "_", gsub("seq.", "", newlist$newAptamers))
+  targets$NewSymbol <- targets$Symbol %in% newlist$newSymbols
+  
+  saveRDS(targets, file = paste0(root_data_dir, proj_dir3, "/", name, ".rds"))
+  targets.list[[gsub("_.*", "", name)]] <- targets
+}#name
+```
